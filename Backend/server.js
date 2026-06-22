@@ -325,6 +325,14 @@ const mergeVideoAudio = async (videoPath, audioPath, outputPath) => {
     });
 };
 
+// Extract YouTube video ID from URL
+const extractVideoId = (url) => {
+    if (!url) return null;
+    const regExp = /^.*(youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+    const match = url.match(regExp);
+    return (match && match[2].length === 11) ? match[2] : null;
+};
+
 // New endpoint to check transcript availability
 app.post('/api/check-transcript', async (req, res) => {
     const { videoUrl } = req.body;
@@ -351,9 +359,9 @@ app.post('/api/check-transcript', async (req, res) => {
 
 // Main dubbing endpoint - ASYNC with progress tracking
 app.post('/api/dub-video', async (req, res) => {
-    const { videoUrl, targetLanguage } = req.body;
+    const { videoUrl, targetLanguage, cookies } = req.body;
     const jobId = uuidv4();
-    
+
     // Initialize job progress
     jobProgress[jobId] = {
         status: 'starting',
@@ -362,7 +370,7 @@ app.post('/api/dub-video', async (req, res) => {
         error: null,
         result: null
     };
-    
+
     // Immediately return jobId
     res.status(202).json({
         success: true,
@@ -371,7 +379,7 @@ app.post('/api/dub-video', async (req, res) => {
     });
     
     // Process in background
-    processDubbingJob(jobId, videoUrl, targetLanguage).catch(err => {
+    processDubbingJob(jobId, videoUrl, targetLanguage, cookies).catch(err => {
         console.error(`Job ${jobId} failed:`, err);
         jobProgress[jobId].status = 'failed';
         jobProgress[jobId].error = err.message;
@@ -379,7 +387,7 @@ app.post('/api/dub-video', async (req, res) => {
 });
 
 // Background job processing function
-async function processDubbingJob(jobId, videoUrl, targetLanguage) {
+async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
     try {
         await ensureDownloadsDir();
         
@@ -402,7 +410,7 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage) {
         console.log(`📝 [${jobId}] Fetching transcript...`);
         let transcript;
         try {
-            transcript = await fetchTranscript(videoId);
+            transcript = await fetchTranscript(videoId, { cookies });
         } catch (transcriptError) {
             throw new Error(`Transcript fetching failed: ${transcriptError.message}`);
         }

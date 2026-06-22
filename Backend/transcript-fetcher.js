@@ -50,7 +50,8 @@ const srtTimeToSec = (str) => {
 };
 
 // Strategy 5: use Whisper API to transcribe video audio (when all subtitle methods fail)
-const fetchTranscriptWithWhisper = async (videoId) => {
+const fetchTranscriptWithWhisper = async (videoId, options = {}) => {
+    const { cookies } = options || {};
     const apiKey = process.env.AGNES_API_KEY || process.env.OPENAI_API_KEY;
     if (!apiKey) {
         console.log(`  [Whisper] No AGNES_API_KEY or OPENAI_API_KEY, skipping...`);
@@ -70,6 +71,14 @@ const fetchTranscriptWithWhisper = async (videoId) => {
         ];
         if (process.env.PROXY_URL) {
             args.push('--proxy', process.env.PROXY_URL);
+        }
+        // Support cookies for authenticated downloads
+        let cookieFile = null;
+        if (cookies && cookies.trim()) {
+            cookieFile = path.join(tmpDir, `${videoId}_cookies.txt`);
+            fsSync.writeFileSync(cookieFile, cookies.trim(), 'utf8');
+            args.push('--cookies', cookieFile);
+            console.log(`  [Whisper] Using cookies for audio download`);
         }
         args.push('-o', audioPath, videoUrl);
 
@@ -130,18 +139,20 @@ const fetchTranscriptWithWhisper = async (videoId) => {
         console.log(`  [Whisper] Failed: ${err.message}`);
         throw err;
     } finally {
-        // Clean up audio file
+        // Clean up audio file and cookie file
         try { fsSync.unlinkSync(audioPath); } catch (e) {}
+        try { fsSync.unlinkSync(path.join(tmpDir, `${videoId}_cookies.txt`)); } catch (e) {}
     }
 };
 
 // Main: fetch transcript using youtube-transcript package
-const fetchTranscript = async (videoId) => {
+const fetchTranscript = async (videoId, options = {}) => {
     if (!videoId || typeof videoId !== 'string' || videoId.length !== 11) {
         throw new Error('Invalid YouTube video ID');
     }
 
-    console.log(`📝 fetchTranscript(${videoId}) via youtube-transcript...`);
+    const { cookies } = options;
+    console.log(`📝 fetchTranscript(${videoId})${cookies ? ' [with cookies]' : ''}...`);
 
     const errors = []; // Collect all errors for better debugging
 
@@ -211,7 +222,7 @@ const fetchTranscript = async (videoId) => {
     // Strategy 4: fallback to yt-dlp (if available)
     console.log(`  Trying yt-dlp fallback...`);
     try {
-        const segments = await fetchTranscriptWithYtDlp(videoId);
+        const segments = await fetchTranscriptWithYtDlp(videoId, { cookies });
         if (segments && segments.length > 0) {
             console.log(`  ✅ Got ${segments.length} segments via yt-dlp fallback`);
             return segments;
@@ -226,7 +237,7 @@ const fetchTranscript = async (videoId) => {
     if (whisperApiKey) {
         console.log(`  Trying Whisper API fallback...`);
         try {
-            const segments = await fetchTranscriptWithWhisper(videoId);
+            const segments = await fetchTranscriptWithWhisper(videoId, { cookies });
             if (segments && segments.length > 0) {
                 console.log(`  ✅ Got ${segments.length} segments via Whisper API`);
                 return segments;
@@ -264,30 +275,43 @@ const fetchTranscript = async (videoId) => {
 };
 
 // Fallback: use yt-dlp to download subtitles
-const fetchTranscriptWithYtDlp = async (videoId) => {
+const fetchTranscriptWithYtDlp = async (videoId, options = {}) => {
     const { spawn } = require('child_process');
-    
+    const { cookies } = options || {};
+
     const outputBase = path.join(tmpDir, videoId);
-    
+
     // Try auto-generated subtitles first
     const args = ['--force-overwrite', '--write-auto-sub', '--skip-download', '--sub-format', 'srt', '--no-warnings'];
-    
+
     if (process.env.PROXY_URL) {
         args.push('--proxy', process.env.PROXY_URL);
     }
-    
+
+    // Support cookies - write to temp file for yt-dlp
+    let cookieFile = null;
+    if (cookies && cookies.trim()) {
+        cookieFile = path.join(tmpDir, `${videoId}_cookies.txt`);
+        fsSync.writeFileSync(cookieFile, cookies.trim(), 'utf8');
+        args.push('--cookies', cookieFile);
+        console.log(`  [yt-dlp] Using cookies from temp file`);
+    }
+
     args.push('-o', outputBase, `https://www.youtube.com/watch?v=${videoId}`);
-    
+
     return new Promise((resolve, reject) => {
-        console.log(`  [yt-dlp] Running: yt-dlp ${args.join(' ')}`);
+        console.log(`  [yt-dlp] Running: yt-dlp ${args.filter(a => !a.includes('cookies')).join(' ')} --cookies <cookie_file>`);
         const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
-        
+
         proc.stdout.on('data', (d) => { stdout += d.toString(); });
         proc.stderr.on('data', (d) => { stderr += d.toString(); });
-        
+
         proc.on('close', async (code) => {
+            // Clean up cookie file
+            try { if (cookieFile) fsSync.unlinkSync(cookieFile); } catch (e) {}
+
             if (code === 0) {
                 try {
                     const files = await fs.readdir(tmpDir);
@@ -308,12 +332,13 @@ const fetchTranscriptWithYtDlp = async (videoId) => {
                 reject(new Error(`yt-dlp exited ${code}: ${stderr || stdout || 'unknown error'}`));
             }
         });
-        
+
         proc.on('error', reject);
-        
+
         // Timeout after 30 seconds
         setTimeout(() => {
             proc.kill('SIGKILL');
+            try { if (cookieFile) fsSync.unlinkSync(cookieFile); } catch (e) {}
             reject(new Error('yt-dlp timed out after 30000ms'));
         }, 30000);
     });

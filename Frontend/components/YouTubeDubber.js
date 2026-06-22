@@ -1,17 +1,19 @@
 'use client';
 
 import { useState } from 'react';
-import { Play, Download, Globe, Zap, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { Play, Download, Globe, Zap, CheckCircle, AlertCircle, Loader2, Settings, ChevronDown, Cookie } from 'lucide-react';
 
 export default function YouTubeDubber() {
   const [videoUrl, setVideoUrl] = useState('');
-  const [targetLanguage, setTargetLanguage] = useState('spanish');
+  const [targetLanguage, setTargetLanguage] = useState('chinese');
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
   const [jobId, setJobId] = useState(null);
   const [progress, setProgress] = useState(null);
   const [polling, setPolling] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [cookies, setCookies] = useState('');
 
   const languages = [
     { code: 'spanish', name: '西班牙语 (Español)' },
@@ -48,7 +50,8 @@ export default function YouTubeDubber() {
         },
         body: JSON.stringify({
           videoUrl,
-          targetLanguage
+          targetLanguage,
+          cookies: cookies.trim() || undefined
         })
       });
 
@@ -100,6 +103,8 @@ export default function YouTubeDubber() {
     setTargetLanguage('spanish');
     setResult(null);
     setError('');
+    setCookies('');
+    setShowAdvanced(false);
   };
 
   return (
@@ -164,6 +169,44 @@ export default function YouTubeDubber() {
                     </select>
                     <Globe className="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5 pointer-events-none" />
                   </div>
+                </div>
+
+                {/* 高级选项 - Cookie */}
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="flex items-center gap-2 text-white/60 hover:text-white text-sm transition-colors duration-200"
+                  >
+                    <Settings className="w-4 h-4" />
+                    <span>高级选项</span>
+                    <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${showAdvanced ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {showAdvanced && (
+                    <div className="mt-3 p-4 bg-white/5 rounded-2xl border border-white/10 space-y-3">
+                      <div className="flex items-center gap-2 text-white/80 text-sm">
+                        <Cookie className="w-4 h-4" />
+                        <span>YouTube Cookies（用于绕过字幕限制）</span>
+                      </div>
+                      <textarea
+                        value={cookies}
+                        onChange={(e) => setCookies(e.target.value)}
+                        placeholder={`粘贴 YouTube Cookies（Netscape 格式）\n\n获取方式：\n1. 安装浏览器扩展 "Get cookies.txt"\n2. 打开 YouTube 并登录\n3. 点击扩展导出 Cookies\n4. 粘贴到此处`}
+                        rows={6}
+                        className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-xl text-white placeholder-gray-500 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition-all duration-300 resize-none"
+                      />
+                      {cookies.trim() && (
+                        <div className="flex items-center gap-2 text-green-400 text-xs">
+                          <CheckCircle className="w-3 h-3" />
+                          <span>已配置 Cookie ({cookies.trim().length} 字符)</span>
+                        </div>
+                      )}
+                      <p className="text-gray-500 text-xs">
+                        💡 当视频作者禁用字幕时，提供登录后的 Cookie 可以帮助 yt-dlp 获取更多权限。
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* 错误信息 */}

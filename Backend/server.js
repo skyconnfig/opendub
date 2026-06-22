@@ -262,18 +262,20 @@ const translateWithOpenAI = async (textArray, targetLanguage) => {
     console.log(`  🌐 Using ${provider} for translation (model: ${model})`);
     
     try {
-        // Batch translate - OpenAI has token limits, so we batch
-        const batchSize = 20; // Translate 20 segments at a time
+        // Batch translate - use JSON format for reliable parsing
+        const batchSize = 15; // Smaller batch for JSON reliability
         const translatedResults = [];
         
         for (let i = 0; i < textArray.length; i += batchSize) {
             const batch = textArray.slice(i, i + batchSize);
             
-            // Build prompt
-            const prompt = `Translate the following subtitles to ${targetLanguage}. ` +
-                `Respond with ONLY the translated texts, one per line, in the same order. ` +
-                `Keep it concise and natural.\n\n` +
-                batch.map((item, idx) => `${i + idx}: ${item.text}`).join('\n');
+            // Build prompt - request JSON output for reliable parsing
+            const textsToTranslate = batch.map(item => item.text);
+            const prompt = `Translate the following texts to ${targetLanguage}.\n` +
+                `Return a JSON array of translated strings, one per input, in the exact same order.\n` +
+                `Keep translations concise and natural. Do NOT add explanations or extra text.\n\n` +
+                `Input:\n${JSON.stringify(textsToTranslate)}\n\n` +
+                `Respond with ONLY the JSON array.`;
             
             console.log(`  🌐 Translating batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(textArray.length / batchSize)}`);
             
@@ -291,13 +293,38 @@ const translateWithOpenAI = async (textArray, targetLanguage) => {
             });
             
             const content = response.data.choices[0].message.content.trim();
-            const lines = content.split('\n').map(l => l.replace(/^\d+:\s*/, '').trim());
+            
+            // Parse JSON response
+            let translatedTexts;
+            try {
+                // Extract JSON array from response (handle extra text)
+                const jsonMatch = content.match(/\[[\s\S]*\]/);
+                if (!jsonMatch) {
+                    throw new Error('No JSON array found in response');
+                }
+                translatedTexts = JSON.parse(jsonMatch[0]);
+                
+                // Validate length
+                if (translatedTexts.length !== batch.length) {
+                    console.warn(`  ⚠️ Translation count mismatch: expected ${batch.length}, got ${translatedTexts.length}`);
+                    // Pad or trim to match
+                    while (translatedTexts.length < batch.length) {
+                        translatedTexts.push(batch[translatedTexts.length].text);
+                    }
+                    translatedTexts = translatedTexts.slice(0, batch.length);
+                }
+            } catch (parseErr) {
+                console.error(`  ⚠️ JSON parsing failed:`, parseErr.message);
+                console.error(`  📝 Raw response:`, content.substring(0, 200));
+                // Fallback: use original text
+                translatedTexts = batch.map(item => item.text);
+            }
             
             // Map back to original structure
             batch.forEach((item, idx) => {
                 translatedResults.push({
                     ...item,
-                    translatedText: idx < lines.length ? lines[idx] : item.text
+                    translatedText: translatedTexts[idx] || item.text
                 });
             });
             
@@ -351,12 +378,15 @@ const formatSRTTime = (seconds) => {
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
 };
 
-// Merge video and audio
-const mergeVideoAudio = async (videoPath, audioPath, outputPath) => {
+// Merge video and audio (optionally embed subtitles)
+const mergeVideoAudio = async (videoPath, audioPath, outputPath, srtPath = null) => {
     return new Promise((resolve, reject) => {
         console.log(`  🎬 Merging video and audio...`);
         console.log(`  📹 Video: ${videoPath}`);
         console.log(`  🔊 Audio: ${audioPath}`);
+        if (srtPath) {
+            console.log(`  📝 Subtitle: ${srtPath}`);
+        }
         
         // Verify files exist
         if (!require('fs').existsSync(videoPath)) {
@@ -366,19 +396,37 @@ const mergeVideoAudio = async (videoPath, audioPath, outputPath) => {
             return reject(new Error(`Audio file not found: ${audioPath}`));
         }
         
-        ffmpeg()
-            .input(videoPath)
-            .input(audioPath)
-            .outputOptions([
-                '-c:v', 'libx264',    // Re-encode video to ensure compatibility
-                '-preset', 'fast',     // Fast encoding
-                '-crf', '23',          // Quality level
-                '-c:a', 'aac',       // Encode audio to AAC
-                '-b:a', '128k',      // Audio bitrate
-                '-ar', '44100',      // Audio sample rate
-                '-ac', '2',           // Stereo
-                '-shortest'            // End with shortest stream
-            ])
+        let command = ffmpeg();
+        command = command.input(videoPath).input(audioPath);
+        
+        let outputOptions = [
+            '-c:v', 'libx264',    // Re-encode video to ensure compatibility
+            '-preset', 'fast',     // Fast encoding
+            '-crf', '23',          // Quality level
+            '-c:a', 'aac',       // Encode audio to AAC
+            '-b:a', '128k',      // Audio bitrate
+            '-ar', '44100',      // Audio sample rate
+            '-ac', '2',           // Stereo
+            '-shortest'            // End with shortest stream
+        ];
+        
+        // If SRT path provided, embed subtitles as a soft subtitle track
+        if (srtPath && require('fs').existsSync(srtPath)) {
+            command = command.input(srtPath);
+            outputOptions.push(
+                '-c:s', 'mov_text',  // Subtitle codec for MP4
+                '-map', '0:v',       // Video stream from first input
+                '-map', '1:a',       // Audio stream from second input
+                '-map', '2:0'        // Subtitle stream from third input (first stream)
+            );
+            console.log(`  ✅ Subtitles will be embedded as a soft subtitle track`);
+        } else {
+            // Default: just map video and audio
+            outputOptions.push('-map', '0:v', '-map', '1:a');
+        }
+        
+        command
+            .outputOptions(outputOptions)
             .output(outputPath)
             .on('start', (commandLine) => {
                 console.log(`  🚀 FFmpeg command: ${commandLine}`);
@@ -390,6 +438,9 @@ const mergeVideoAudio = async (videoPath, audioPath, outputPath) => {
             })
             .on('end', () => {
                 console.log(`  ✅ Video and audio merged successfully`);
+                if (srtPath && require('fs').existsSync(srtPath)) {
+                    console.log(`  ✅ Subtitles embedded successfully`);
+                }
                 resolve(outputPath);
             })
             .on('error', (err, stdout, stderr) => {
@@ -477,6 +528,9 @@ app.post('/api/dub-video', async (req, res) => {
 
 // Background job processing function
 async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
+    // Define variables in outer scope for access across try blocks
+    let srtPath = null;
+    
     try {
         await ensureDownloadsDir();
         
@@ -561,7 +615,7 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
         // Step 3.5: Generate SRT subtitle file
         console.log(`📝 [${jobId}] Generating SRT subtitle file...`);
         try {
-            const srtPath = path.join(tempDir, 'translated_subtitle.srt');
+            srtPath = path.join(tempDir, 'translated_subtitle.srt');
             await generateSRT(translatedTranscript, srtPath);
             console.log(`✅ [${jobId}] SRT file generated: ${srtPath}`);
         } catch (srtError) {
@@ -720,7 +774,7 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
         // Step 7: Merge video and audio
         console.log(`🎬 [${jobId}] Merging video and audio...`);
         const finalVideoPath = path.join(tempDir, 'dubbed_video.mp4');
-        await mergeVideoAudio(videoPath, finalAudioPath, finalVideoPath);
+        await mergeVideoAudio(videoPath, finalAudioPath, finalVideoPath, srtPath);
         
         console.log(`✅ [${jobId}] Dubbing completed successfully!`);
         jobProgress[jobId].status = 'completed';

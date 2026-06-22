@@ -63,31 +63,53 @@ const fetchTranscriptWithWhisper = async (videoId, options = {}) => {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
     try {
-        // Download audio only
-        const args = [
+        // Download audio only - with multi-browser cookie fallback
+        const baseAudioArgs = [
             '--force-overwrite',
             '-x', '--audio-format', 'mp3',
             '--no-warnings',
         ];
         if (process.env.PROXY_URL) {
-            args.push('--proxy', process.env.PROXY_URL);
+            baseAudioArgs.push('--proxy', process.env.PROXY_URL);
         }
-        // Support cookies for authenticated downloads
+
+        // Helper to run yt-dlp audio download
+        const downloadAudio = async (extraArgs) => {
+            const fullArgs = [...baseAudioArgs, ...extraArgs, '-o', audioPath, videoUrl];
+            await new Promise((resolve, reject) => {
+                console.log(`  [Whisper] Audio download args: yt-dlp ${fullArgs.filter(a => !a.includes('cookies')).join(' ')}`);
+                const proc = require('child_process').spawn('yt-dlp', fullArgs, { stdio: 'ignore' });
+                proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`yt-dlp exited ${code}`)));
+                proc.on('error', reject);
+                setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('yt-dlp timed out')); }, 60000);
+            });
+        };
+
+        // Try manual cookies first
         let cookieFile = null;
         if (cookies && cookies.trim()) {
             cookieFile = path.join(tmpDir, `${videoId}_cookies.txt`);
             fsSync.writeFileSync(cookieFile, cookies.trim(), 'utf8');
-            args.push('--cookies', cookieFile);
-            console.log(`  [Whisper] Using cookies for audio download`);
+            console.log(`  [Whisper] Using manual cookies`);
+            try { await downloadAudio(['--cookies', cookieFile]); }
+            finally { try { fsSync.unlinkSync(cookieFile); } catch(e) {} }
+        } else {
+            // Try each browser
+            const browsers = ['chrome', 'edge', 'firefox'];
+            let audioOk = false;
+            for (const browser of browsers) {
+                try {
+                    console.log(`  [Whisper] Trying --cookies-from-browser ${browser}...`);
+                    await downloadAudio(['--cookies-from-browser', browser]);
+                    audioOk = true;
+                    break;
+                } catch (err) {
+                    console.log(`  [Whisper] ${browser} failed: ${(err.message||'').substring(0, 100)}`);
+                    if (!(err.message || '').toLowerCase().includes('cookie')) throw err;
+                }
+            }
+            if (!audioOk) throw new Error('All browser cookie methods failed for audio download');
         }
-        args.push('-o', audioPath, videoUrl);
-
-        await new Promise((resolve, reject) => {
-            const proc = require('child_process').spawn('yt-dlp', args, { stdio: 'ignore' });
-            proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`yt-dlp exited ${code}`)));
-            proc.on('error', reject);
-            setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('yt-dlp timed out')); }, 60000);
-        });
 
         if (!fsSync.existsSync(audioPath)) {
             throw new Error('Audio download failed - file not found');
@@ -253,23 +275,29 @@ const fetchTranscript = async (videoId, options = {}) => {
 
     // All strategies failed - build helpful error
     let helpMsg = `无法获取视频 ${videoId} 的字幕。\n\n`;
-    helpMsg += `可能原因：\n`;
-    helpMsg += `  1. 视频作者已禁用字幕功能\n`;
-    helpMsg += `  2. 视频没有任何字幕（自动生成或手动上传）\n`;
-    helpMsg += `  3. 代理连接不稳定，请稍后重试\n\n`;
+    helpMsg += `原因：该视频需要 YouTube 登录验证（作者禁用了公开字幕）\n\n`;
 
-    // Check if Whisper is available
-    const whisperKey = process.env.AGNES_API_KEY || process.env.OPENAI_API_KEY;
-    if (!whisperKey) {
-        helpMsg += `💡 解决方案：在 .env 中配置 AGNES_API_KEY 或 OPENAI_API_KEY\n`;
-        helpMsg += `   配置后，系统会自动用 Whisper AI 语音识别提取字幕。\n\n`;
-    }
+    helpMsg += `🔧 请按以下步骤操作（二选一）：\n\n`;
+    helpMsg += `方案 A — 自动检测（推荐）：\n`;
+    helpMsg += `  1. 关闭所有 Chrome/Edge 浏览器窗口\n`;
+    helpMsg += `  2. 重新点「开始配音」\n`;
+    helpMsg += `  系统会自动读取浏览器的 YouTube 登录状态\n\n`;
+
+    helpMsg += `方案 B — 手动粘贴 Cookie：\n`;
+    helpMsg += `  1. 安装浏览器扩展 "Get cookies.txt"\n`;
+    helpMsg += `  2. 打开 YouTube 并确认已登录\n`;
+    helpMsg += `  3. 点击扩展图标 → 导出 Cookies（Netscape 格式）\n`;
+    helpMsg += `  4. 在本页「⚙️ 高级选项」中粘贴 Cookie\n`;
+    helpMsg += `  5. 重新点「开始配音」\n\n`;
 
     helpMsg += `推荐测试视频（100% 有字幕）：\n`;
     helpMsg += `  • https://www.youtube.com/watch?v=dQw4w9WgXcQ （Rick Astley）\n`;
     helpMsg += `  • https://www.youtube.com/watch?v=8jPQjjsBbIc （TED 演讲）\n`;
     helpMsg += `  • https://www.youtube.com/watch?v=C8EKiG581xc （国家地理）\n\n`;
-    helpMsg += `技术详情：${errors.slice(0, 3).join('; ')}`;
+    helpMsg += `技术详情（共 ${errors.length} 个策略尝试）：\n`;
+    errors.forEach((e, i) => {
+        helpMsg += `  ${i + 1}. ${e}\n`;
+    });
 
     throw new Error(helpMsg);
 };
@@ -282,66 +310,87 @@ const fetchTranscriptWithYtDlp = async (videoId, options = {}) => {
     const outputBase = path.join(tmpDir, videoId);
 
     // Try auto-generated subtitles first
-    const args = ['--force-overwrite', '--write-auto-sub', '--skip-download', '--sub-format', 'srt', '--no-warnings'];
+    const baseArgs = ['--force-overwrite', '--write-auto-sub', '--skip-download', '--sub-format', 'srt', '--no-warnings'];
 
     if (process.env.PROXY_URL) {
-        args.push('--proxy', process.env.PROXY_URL);
+        baseArgs.push('--proxy', process.env.PROXY_URL);
     }
 
-    // Support cookies - write to temp file for yt-dlp
-    let cookieFile = null;
-    if (cookies && cookies.trim()) {
-        cookieFile = path.join(tmpDir, `${videoId}_cookies.txt`);
-        fsSync.writeFileSync(cookieFile, cookies.trim(), 'utf8');
-        args.push('--cookies', cookieFile);
-        console.log(`  [yt-dlp] Using cookies from temp file`);
-    }
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    args.push('-o', outputBase, `https://www.youtube.com/watch?v=${videoId}`);
+    // Helper: run yt-dlp and parse result
+    const runYtDlp = async (extraArgs) => {
+        const fullArgs = [...baseArgs, ...extraArgs, '-o', outputBase, videoUrl];
 
-    return new Promise((resolve, reject) => {
-        console.log(`  [yt-dlp] Running: yt-dlp ${args.filter(a => !a.includes('cookies')).join(' ')} --cookies <cookie_file>`);
-        const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-        let stdout = '';
-        let stderr = '';
+        return new Promise((resolve, reject) => {
+            console.log(`  [yt-dlp] Running: yt-dlp ${fullArgs.filter(a => !a.includes('cookies')).join(' ')}`);
+            const proc = spawn('yt-dlp', fullArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+            let stdout = '';
+            let stderr = '';
 
-        proc.stdout.on('data', (d) => { stdout += d.toString(); });
-        proc.stderr.on('data', (d) => { stderr += d.toString(); });
+            proc.stdout.on('data', (d) => { stdout += d.toString(); });
+            proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-        proc.on('close', async (code) => {
-            // Clean up cookie file
-            try { if (cookieFile) fsSync.unlinkSync(cookieFile); } catch (e) {}
-
-            if (code === 0) {
-                try {
-                    const files = await fs.readdir(tmpDir);
-                    const subFile = files.find(f => f.includes(videoId) && f.endsWith('.srt'));
-                    if (subFile) {
-                        const content = await fs.readFile(path.join(tmpDir, subFile), 'utf8');
-                        const segments = parseSrt(content);
-                        if (segments && segments.length > 0) {
-                            resolve(segments);
-                            return;
+            proc.on('close', async (code) => {
+                if (code === 0) {
+                    try {
+                        const files = await fs.readdir(tmpDir);
+                        const subFile = files.find(f => f.includes(videoId) && f.endsWith('.srt'));
+                        if (subFile) {
+                            const content = await fs.readFile(path.join(tmpDir, subFile), 'utf8');
+                            const segments = parseSrt(content);
+                            if (segments && segments.length > 0) {
+                                resolve(segments);
+                                return;
+                            }
                         }
+                        reject(new Error('Subtitle file not found or empty'));
+                    } catch (err) {
+                        reject(err);
                     }
-                    reject(new Error('Subtitle file not found or empty'));
-                } catch (err) {
-                    reject(err);
+                } else {
+                    reject(new Error(`yt-dlp exited ${code}: ${stderr || stdout || 'unknown error'}`));
                 }
-            } else {
-                reject(new Error(`yt-dlp exited ${code}: ${stderr || stdout || 'unknown error'}`));
-            }
+            });
+
+            proc.on('error', reject);
+            setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('yt-dlp timed out')); }, 30000);
         });
+    };
 
-        proc.on('error', reject);
+    // Priority 1: User-provided cookies (manual paste)
+    if (cookies && cookies.trim()) {
+        const cookieFile = path.join(tmpDir, `${videoId}_cookies.txt`);
+        fsSync.writeFileSync(cookieFile, cookies.trim(), 'utf8');
+        console.log(`  [yt-dlp] Using manual cookies`);
+        try {
+            return await runYtDlp(['--cookies', cookieFile]);
+        } finally {
+            try { fsSync.unlinkSync(cookieFile); } catch (e) {}
+        }
+    }
 
-        // Timeout after 30 seconds
-        setTimeout(() => {
-            proc.kill('SIGKILL');
-            try { if (cookieFile) fsSync.unlinkSync(cookieFile); } catch (e) {}
-            reject(new Error('yt-dlp timed out after 30000ms'));
-        }, 30000);
-    });
+    // Priority 2: Auto-extract from browser (try multiple browsers in order)
+    const browsers = ['chrome', 'edge', 'firefox'];
+    let lastError = null;
+
+    for (const browser of browsers) {
+        try {
+            console.log(`  [yt-dlp] Trying --cookies-from-browser ${browser}...`);
+            return await runYtDlp(['--cookies-from-browser', browser]);
+        } catch (err) {
+            lastError = err;
+            const msg = err.message || '';
+            console.log(`  [yt-dlp] ${browser} failed: ${msg.substring(0, 120)}`);
+
+            // If it's not a cookie-related error, no point trying other browsers
+            if (!msg.toLowerCase().includes('cookie')) {
+                throw err;
+            }
+        }
+    }
+
+    throw lastError || new Error('All browser cookie extraction methods failed');
 };
 
 // Validate transcript availability (for /api/check-transcript endpoint)

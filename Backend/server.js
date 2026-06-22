@@ -194,6 +194,123 @@ const downloadVideoWithYoutubeDl = async (videoId, outputPath) => {
     }
 };
 
+// Translate using OpenAI-compatible API (Agnes AI, DeepSeek, OpenAI)
+const translateWithOpenAI = async (textArray, targetLanguage) => {
+    // Determine which API to use
+    let apiKey, baseUrl, model, provider;
+    
+    // Priority: Agnes AI > DeepSeek > OpenAI
+    if (process.env.AGNES_API_KEY) {
+        apiKey = process.env.AGNES_API_KEY;
+        baseUrl = process.env.AGNES_BASE_URL || 'https://apihub.agnes-ai.com/v1';
+        model = process.env.AGNES_MODEL || 'agnes-2.0-flash';
+        provider = 'Agnes AI';
+    } else if (process.env.DEEPSEEK_API_KEY) {
+        apiKey = process.env.DEEPSEEK_API_KEY;
+        baseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
+        model = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+        provider = 'DeepSeek';
+    } else if (process.env.OPENAI_API_KEY) {
+        apiKey = process.env.OPENAI_API_KEY;
+        baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+        model = process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
+        provider = 'OpenAI';
+    } else {
+        throw new Error('No OpenAI-compatible API configured. Please set AGNES_API_KEY, DEEPSEEK_API_KEY, or OPENAI_API_KEY');
+    }
+    
+    console.log(`  🌐 Using ${provider} for translation (model: ${model})`);
+    
+    try {
+        // Batch translate - OpenAI has token limits, so we batch
+        const batchSize = 20; // Translate 20 segments at a time
+        const translatedResults = [];
+        
+        for (let i = 0; i < textArray.length; i += batchSize) {
+            const batch = textArray.slice(i, i + batchSize);
+            
+            // Build prompt
+            const prompt = `Translate the following subtitles to ${targetLanguage}. ` +
+                `Respond with ONLY the translated texts, one per line, in the same order. ` +
+                `Keep it concise and natural.\n\n` +
+                batch.map((item, idx) => `${i + idx}: ${item.text}`).join('\n');
+            
+            console.log(`  🌐 Translating batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(textArray.length / batchSize)}`);
+            
+            const response = await axios.post(`${baseUrl}/chat/completions`, {
+                model: model,
+                messages: [{
+                    role: 'user',
+                    content: prompt
+                }],
+                temperature: 0.3,
+                max_tokens: 2000,
+            }, {
+                headers: { 'Authorization': `Bearer ${apiKey}` },
+                timeout: 60000,
+            });
+            
+            const content = response.data.choices[0].message.content.trim();
+            const lines = content.split('\n').map(l => l.replace(/^\d+:\s*/, '').trim());
+            
+            // Map back to original structure
+            batch.forEach((item, idx) => {
+                translatedResults.push({
+                    ...item,
+                    translatedText: idx < lines.length ? lines[idx] : item.text
+                });
+            });
+            
+            // Add delay to avoid rate limiting
+            if (i + batchSize < textArray.length) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+        
+        console.log(`  ✅ [${provider}] Translation completed`);
+        return translatedResults;
+        
+    } catch (err) {
+        console.error(`  [${provider}] Translation failed:`, err.message);
+        throw err;
+    }
+};
+
+// Generate SRT subtitle file from transcript
+const generateSRT = async (transcript, outputPath) => {
+    try {
+        let srtContent = '';
+        
+        transcript.forEach((item, index) => {
+            const startTime = formatSRTTime(item.start);
+            const endTime = formatSRTTime(item.start + item.duration);
+            const text = item.translatedText || item.text;
+            
+            srtContent += `${index + 1}\n`;
+            srtContent += `${startTime} --> ${endTime}\n`;
+            srtContent += `${text}\n\n`;
+        });
+        
+        await fs.writeFile(outputPath, srtContent, 'utf8');
+        console.log(`  ✅ SRT file generated: ${path.basename(outputPath)}`);
+        return outputPath;
+        
+    } catch (err) {
+        console.error('SRT generation error:', err.message);
+        throw err;
+    }
+};
+
+// Helper: Format time for SRT (HH:MM:SS,mmm)
+const formatSRTTime = (seconds) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+};
+
 // Merge video and audio
 const mergeVideoAudio = async (videoPath, audioPath, outputPath) => {
     return new Promise((resolve, reject) => {

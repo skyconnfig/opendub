@@ -7,48 +7,57 @@
 ## ✨ 功能特色
 
 - 🎬 **YouTube视频处理**：无缝下载和处理YouTube视频
-- 📝 **智能字幕提取**：高级字幕获取，多种备用策略，支持代理
-- 🌍 **多语言翻译**：支持16+种语言，使用RapidAPI Google翻译
-- 🔊 **自然语音生成**：高质量文本转语音，使用Google TTS
+- 📝 **智能字幕提取**：多策略获取（youtube-transcript → yt-dlp → Whisper API），支持代理
+- 🌍 **多语言翻译**：支持40+种语言，使用 OpenAI 兼容接口（Agnes AI / DeepSeek / OpenAI）
+- 🔊 **自然语音生成**：**Edge TTS** 免费高质量神经网络语音（100+ 语音）
 - ⏰ **精准音频对齐**：保持原始时间同步
 - 🎭 **专业视频合并**：将配音音频与原始视频合并
 - 📊 **实时进度跟踪**：圆形进度环 + 进度条 + 步骤指示器
-- 🔧 **代理支持**：支持HTTP/SOCKS5代理，解决网络限制问题
+- 🔧 **代理支持**：支持 HTTP/SOCKS5 代理，解决网络限制问题
 - 🚀 **异步处理**：后端异步处理，前端实时轮询进度
 - 🎨 **现代UI/UX**：精美渐变界面，流畅动画
+- 📄 **SRT字幕生成**：自动生成翻译后的SRT字幕文件
 
 ## 🎯 支持语言
 
-| 语言 | 代码 | 示例 |
-|------|------|------|
-| 西班牙语 | `spanish` | Español |
-| 法语 | `french` | Français |
-| 德语 | `german` | Deutsch |
-| 意大利语 | `italian` | Italiano |
-| 葡萄牙语 | `portuguese` | Português |
-| 俄语 | `russian` | Русский |
-| 日语 | `japanese` | 日本語 |
-| 韩语 | `korean` | 한국어 |
-| 中文 | `chinese` | 中文 |
-| 印地语 | `hindi` | हिंदी |
-| 阿拉伯语 | `arabic` | العربية |
-| 荷兰语 | `dutch` | Nederlands |
-| 波兰语 | `polish` | Polski |
-| 土耳其语 | `turkish` | Türkçe |
-| 泰语 | `thai` | ไทย |
-| 越南语 | `vietnamese` | Tiếng Việt |
+### 翻译支持（40+ 语言）
+通过 OpenAI 兼容接口（Agnes AI / DeepSeek）支持所有主流语言。
+
+### 语音合成支持（Edge TTS - 100+ 语音）
+
+| 语言 | 推荐语音 | 语音名称 |
+|------|----------|----------|
+| 中文（简体） | 女声 | `zh-CN-XiaoxiaoNeural` (晓晓) |
+| 中文（简体） | 男声 | `zh-CN-YunxiNeural` (云希) |
+| 中文（台湾） | 女声 | `zh-TW-HsiaoChenNeural` |
+| 英语（美国） | 女声 | `en-US-JennyNeural` |
+| 英语（英国） | 女声 | `en-GB-SoniaNeural` |
+| 日语 | 女声 | `ja-JP-NanamiNeural` |
+| 韩语 | 女声 | `ko-KR-SunHiNeural` |
+| 西班牙语 | 女声 | `es-ES-ElviraNeural` |
+| 法语 | 女声 | `fr-FR-DeniseNeural` |
+| 德语 | 女声 | `de-DE-KatjaNeural` |
+| 更多... | - | 查看 `Backend/tts-engine.js` |
 
 ## 🏗️ 架构
 
 ### 后端 (Node.js/Express) - 端口 3002
 
-- **字幕提取**：使用 `youtube-transcript` 包，支持代理
-- **翻译服务**：RapidAPI Google翻译集成，支持批量翻译
+- **字幕提取**：多策略获取
+  1. `youtube-transcript` npm 包（优先）
+  2. `yt-dlp` 后备方案
+  3. Whisper API 兜底（需配置）
+- **翻译服务**：**OpenAI 兼容接口**（优先级）：
+  1. **Agnes AI**（推荐 - 低成本/免费）
+  2. **DeepSeek**（低成本替代）
+  3. **OpenAI**（原始方案 - 较高成本）
+  4. RapidAPI（已弃用，仅作后备）
 - **音频处理**：FFmpeg 音频处理和合并
 - **视频处理**：yt-dlp 可靠视频下载
-- **语音合成**：Google TTS (gTTS) 自然语音生成
+- **语音合成**：**Edge TTS**（免费，100+ 高质量神经网络语音）
 - **异步处理**：返回 202 + jobId，后台处理任务
 - **进度跟踪**：内存存储实时进度（5% → 100%）
+- **字幕生成**：自动生成翻译后的 SRT 字幕文件
 
 ### 前端 (Next.js/React) - 端口 3000
 
@@ -69,8 +78,11 @@
 - Node.js v18 或更高版本
 - npm 或 yarn
 - FFmpeg 安装在系统上
-- yt-dlp 或 youtube-dl 安装
-- RapidAPI 账户，包含 Google 翻译权限
+- yt-dlp 安装
+- **翻译API密钥**（任选其一）：
+  - Agnes AI API Key（推荐 - 低成本/免费）
+  - DeepSeek API Key（低成本替代）
+  - OpenAI API Key（较高成本）
 - **代理软件**（访问YouTube必需）：V2Ray / Clash / Shadowsocks
 
 ### 安装
@@ -78,7 +90,7 @@
 #### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/skyconfig/opendub.git
+git clone https://github.com/skyconnfig/opendub.git
 cd opendub
 ```
 
@@ -89,6 +101,15 @@ cd Backend
 npm install
 ```
 
+**安装的NPM包：**
+- `express` - Web 框架
+- `cors` - 跨域支持
+- `axios` - HTTP 客户端
+- `fluent-ffmpeg` - 音频/视频处理
+- `youtube-transcript` - 字幕提取
+- `node-edge-tts` - **Edge TTS 语音合成**（免费）
+- `uuid` - 唯一ID生成
+
 #### 3. 安装前端依赖
 
 ```bash
@@ -98,23 +119,56 @@ npm install
 
 #### 4. 设置环境变量
 
-在 `Backend` 目录创建 `.env` 文件：
+**步骤 1：复制配置模板**
+```bash
+cd ../Backend
+cp .env.example .env
+```
+
+**步骤 2：编辑 `.env` 文件**
 
 ```env
-# 服务器端口
+# ==========================================
+# 服务器配置
+# ==========================================
 PORT=3002
 
-# RapidAPI Google翻译密钥
-RAPIDAPI_KEY=your_rapidapi_key_here
+# ==========================================
+# 翻译引擎配置（OpenAI 兼容接口）
+# ==========================================
+# 选项 1：Agnes AI（推荐 - 低成本/免费）
+AGNES_API_KEY=sk-your_agnes_key_here
+AGNES_BASE_URL=https://apihub.agnes-ai.com/v1
+AGNES_MODEL=agnes-2.0-flash
 
-# 代理URL（访问YouTube必需）
-# HTTP代理示例：
-PROXY_URL=http://127.0.0.1:10808
+# 选项 2：DeepSeek（低成本替代）
+# DEEPSEEK_API_KEY=sk-your_deepseek_key_here
 
-# SOCKS5代理示例（如果是V2Ray/Clash）：
+# 选项 3：OpenAI（原始方案 - 较高成本）
+# OPENAI_API_KEY=sk-your_openai_key_here
+
+# ==========================================
+# 语音合成配置（Edge TTS - 免费）
+# ==========================================
+# Edge TTS 无需 API Key！开箱即用！
+
+# 默认语音（中文）
+# 可选：zh-CN-XiaoxiaoNeural（晓晓 - 推荐）
+#       zh-CN-YunxiNeural（云希）
+EDGE_TTS_DEFAULT_VOICE=zh-CN-XiaoxiaoNeural
+
+# ==========================================
+# 代理配置（访问 YouTube 必需）
+# ==========================================
+# HTTP 代理示例（Clash）：
+PROXY_URL=http://127.0.0.1:7890
+
+# SOCKS5 代理示例（V2Ray）：
 # PROXY_URL=socks5://127.0.0.1:10808
 
-# 调试模式
+# ==========================================
+# 调试配置
+# ==========================================
 DEBUG=true
 ```
 
@@ -134,7 +188,6 @@ sudo apt install ffmpeg yt-dlp
 ```
 
 **在 Windows 上：**
-
 1. 从 https://ffmpeg.org/download.html 下载 FFmpeg
 2. 从 https://github.com/yt-dlp/yt-dlp 下载 yt-dlp
 3. 将两者添加到系统 PATH
@@ -147,9 +200,9 @@ DubFlow 需要代理才能访问 YouTube。
 
 ```bash
 # 测试代理
-curl -x http://127.0.0.1:10808 https://www.youtube.com
+curl -x http://127.0.0.1:7890 https://www.youtube.com
 
-# 如果返回HTML，代理工作正常
+# 如果返回 HTML，代理工作正常
 ```
 
 **常见代理软件端口：**
@@ -166,7 +219,7 @@ curl -x http://127.0.0.1:10808 https://www.youtube.com
 
 ```bash
 cd Backend
-npm start
+node server.js
 ```
 
 后端将运行在 http://localhost:3002
@@ -174,7 +227,7 @@ npm start
 ### 启动前端开发服务器
 
 ```bash
-cd Frontend
+cd ../Frontend
 npm run dev
 ```
 
@@ -252,6 +305,7 @@ npm run dev
   "result": {
     "jobId": "uuid-here",
     "downloadUrl": "/downloads/uuid/dubbed_video.mp4",
+    "srtUrl": "/downloads/uuid/translated_subtitles.srt",
     "message": "Video dubbed successfully!",
     "transcriptSegments": 150,
     "translationErrors": 0
@@ -269,8 +323,8 @@ npm run dev
 {
   "configured": true,
   "status": "connected",
-  "message": "代理连接正常 (http://127.0.0.1:10808)",
-  "proxyUrl": "http://127.0.0.1:10808"
+  "message": "代理连接正常 (http://127.0.0.1:7890)",
+  "proxyUrl": "http://127.0.0.1:7890"
 }
 ```
 
@@ -306,7 +360,8 @@ npm run dev
 {
   "status": "OK",
   "message": "YouTube Dubbing API is running",
-  "translateStatus": "RapidAPI Connected"
+  "translateStatus": "Agnes AI Connected",
+  "ttsStatus": "Edge TTS Ready (Free)"
 }
 ```
 
@@ -317,16 +372,19 @@ npm run dev
 | 变量 | 描述 | 是否必须 | 默认值 |
 |------|-------|----------|---------|
 | `PORT` | 后端服务器端口 | 否 | 3002 |
-| `RAPIDAPI_KEY` | RapidAPI 密钥，用于 Google 翻译 | **是** | - |
+| `AGNES_API_KEY` | Agnes AI API 密钥 | **推荐** | - |
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 可选 | - |
+| `OPENAI_API_KEY` | OpenAI API 密钥 | 可选 | - |
 | `PROXY_URL` | 代理URL（HTTP 或 SOCKS5） | **是** | - |
-| `DEBUG` | 调试模式 | 否 | false |
+| `EDGE_TTS_DEFAULT_VOICE` | 默认 Edge TTS 语音 | 否 | `zh-CN-XiaoxiaoNeural` |
+| `DEBUG` | 调试模式 | 否 | `false` |
 
 ### 自定义选项
 
-- **批处理大小**：调整后端代码中的翻译批处理大小（默认10）
+- **翻译批次大小**：调整后端代码中的 `batchSize`（默认 20 条）
+- **语音选择**：修改 `Backend/tts-engine.js` 中的 `edgeTTSVoiceMap`
 - **重试逻辑**：配置字幕获取的重试次数和延迟
 - **音频质量**：修改 FFmpeg 设置，获取不同音频质量
-- **语言支持**：通过更新 `server.js` 中的 `getRapidApiLanguageCode()` 添加新语言
 
 ## 🎨 前端自定义
 
@@ -363,33 +421,61 @@ npm run dev
 **原因：**
 - 视频未启用字幕
 - 代理未工作，无法访问YouTube
+- 视频使用自动生成字幕（可能不可用）
 
 **解决方法：**
 ```bash
 # 1. 检查代理是否工作
-curl -x http://127.0.0.1:10808 https://www.youtube.com
+curl -x http://127.0.0.1:7890 https://www.youtube.com
 
 # 2. 使用有手动字幕的视频测试
 # 推荐测试视频（Rick Astley - Never Gonna Give You Up）：
 # https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+# 3. 查看友好错误提示
+# 应用会显示推荐测试视频列表
 ```
 
-#### 2. 翻译失败（所有翻译都返回原文）
+#### 2. 翻译失败（所有翻译都返回原文或出现错误）
 
 **原因：**
-- RapidAPI 密钥无效或配额用完
-- RapidAPI 订阅计划不支持该端点
+- API 密钥无效或配额用完
+- API 基础URL配置错误
+- 网络连接问题
 
 **解决方法：**
 ```bash
-# 1. 检查 RapidAPI 密钥
-echo $RAPIDAPI_KEY
+# 1. 检查 API 密钥
+echo $AGNES_API_KEY
 
-# 2. 访问 RapidAPI 仪表板检查配额
-# https://rapidapi.com/google-translator9/api/google-translator9
+# 2. 检查 .env 配置
+cat Backend/.env | grep -E "AGNES|DEEPSEEK|OPENAI"
+
+# 3. 查看后端日志
+# 翻译错误会显示在终端中
 ```
 
-#### 3. 视频下载问题
+#### 3. 语音生成失败
+
+**原因：**
+- Edge TTS 包未正确安装
+- 网络连接问题（Edge TTS 需要访问微软服务器）
+
+**解决方法：**
+```bash
+# 1. 重新安装 Edge TTS
+cd Backend
+npm uninstall node-edge-tts
+npm install node-edge-tts
+
+# 2. 检查网络连接
+curl -I https://speech.platform.bing.com
+
+# 3. 查看后端日志
+# Edge TTS 错误会显示在终端中
+```
+
+#### 4. 视频下载问题
 
 **原因：**
 - yt-dlp 未安装或未在 PATH 中
@@ -408,7 +494,7 @@ yt-dlp -F "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 # 在 .env 中设置 PROXY_URL，代码会自动传递给 yt-dlp
 ```
 
-#### 4. FFmpeg 错误
+#### 5. FFmpeg 错误
 
 **原因：**
 - FFmpeg 未正确安装
@@ -423,7 +509,7 @@ ffmpeg -version
 # 3. 确保有足够的磁盘空间进行处理
 ```
 
-#### 5. 代理连接失败
+#### 6. 代理连接失败
 
 **原因：**
 - 代理软件未启动
@@ -433,17 +519,17 @@ ffmpeg -version
 **解决方法：**
 ```bash
 # 1. 检查代理软件是否运行
-netstat -ano | findstr :10808
+netstat -ano | findstr :7890
 
 # 2. 检查代理类型
 # HTTP 代理：
-PROXY_URL=http://127.0.0.1:10808
+PROXY_URL=http://127.0.0.1:7890
 
 # SOCKS5 代理（V2Ray/Clash）：
 PROXY_URL=socks5://127.0.0.1:10808
 
 # 3. 测试代理
-curl -x http://127.0.0.1:10808 https://www.youtube.com
+curl -x http://127.0.0.1:7890 https://www.youtube.com
 ```
 
 ### 调试模式
@@ -461,6 +547,108 @@ DEBUG=true
 - 音频生成进度
 - 视频下载状态
 - 代理连接状态
+- Edge TTS 语音生成日志
+
+## 🏆 最佳实践
+
+### 1. 翻译引擎选择
+
+**推荐顺序：**
+
+| 优先级 | 引擎 | 成本 | 质量 | 推荐场景 |
+|--------|------|------|------|------------|
+| 1 | **Agnes AI** | 免费/极低 | 高 | 生产环境（推荐） |
+| 2 | **DeepSeek** | 低 | 高 | 成本敏感场景 |
+| 3 | **OpenAI** | 中高 | 最高 | 预算充足场景 |
+
+**配置示例：**
+
+```env
+# 推荐：Agnes AI（免费/低成本）
+AGNES_API_KEY=sk-your_key_here
+AGNES_BASE_URL=https://apihub.agnes-ai.com/v1
+AGNES_MODEL=agnes-2.0-flash
+
+# 或者：DeepSeek（低成本）
+DEEPSEEK_API_KEY=sk-your_key_here
+
+# 或者：OpenAI（高质量）
+OPENAI_API_KEY=sk-your_key_here
+```
+
+### 2. 语音选择建议
+
+**中文视频：**
+- **女声**：`zh-CN-XiaoxiaoNeural`（晓晓 - 推荐）
+- **男声**：`zh-CN-YunxiNeural`（云希）
+
+**英文视频：**
+- **女声**：`en-US-JennyNeural`（推荐）
+- **男声**：`en-US-GuyNeural`
+
+**其他语言：**
+- 日语：`ja-JP-NanamiNeural`
+- 韩语：`ko-KR-SunHiNeural`
+- 西班牙语：`es-ES-ElviraNeural`
+- 法语：`fr-FR-DeniseNeural`
+
+查看完整语音列表：`Backend/tts-engine.js`
+
+### 3. 性能优化
+
+**翻译批次大小：**
+```javascript
+// 在 server.js 中修改 batchSize
+const batchSize = 20; // 默认 20 条/批
+```
+
+**建议：**
+- 短视频（< 5分钟）：`batchSize = 20`
+- 长视频（> 5分钟）：`batchSize = 10`（避免超时）
+
+**并发控制：**
+- Edge TTS 语音生成是串行的（避免API限制）
+- 翻译是并行的（批次内并行，批次间串行）
+
+### 4. 错误处理
+
+**翻译失败策略：**
+- 单个字幕翻译失败不会影响整体流程
+- 失败的翻译会保留原文
+- `translationErrors` 字段显示失败数量
+
+**无字幕视频处理：**
+- 应用会显示友好错误提示
+- 推荐有字幕的测试视频
+- 未来版本将支持 Whisper API 自动生成字幕
+
+### 5. 代理配置
+
+**HTTP 代理（推荐）：**
+```env
+PROXY_URL=http://127.0.0.1:7890
+```
+
+**SOCKS5 代理（V2Ray）：**
+```env
+PROXY_URL=socks5://127.0.0.1:10808
+```
+
+**测试代理连接：**
+```bash
+# 后端提供代理状态端点
+curl http://localhost:3002/api/proxy-status
+```
+
+### 6. 字幕获取策略
+
+**三层兜底机制：**
+
+1. **第一层**：`youtube-transcript` npm 包（最快）
+2. **第二层**：`yt-dlp` 字幕下载（最可靠）
+3. **第三层**：Whisper API 自动生成（需配置，未来支持）
+
+**自动切换**：如果第一层失败，自动尝试第二层。
 
 ## 🤝 贡献
 
@@ -515,7 +703,7 @@ cp Backend/.env.example Backend/.env
 
 # 3. 启动开发服务器
 # 终端 1：启动后端
-cd Backend && npm start
+cd Backend && node server.js
 
 # 终端 2：启动前端
 cd Frontend && npm run dev
@@ -525,14 +713,42 @@ cd Frontend && npm run dev
 
 ## 📝 更新日志
 
+### v1.2.0 (2026-06-22)
+
+**🎉 重大更新：Edge TTS 集成 + OpenAI 兼容翻译引擎**
+
+**新增功能：**
+- ✨ **Edge TTS 集成**：免费高质量神经网络语音合成（100+ 语音）
+- ✨ **OpenAI 兼容翻译**：支持 Agnes AI、DeepSeek、OpenAI
+- ✨ **SRT 字幕生成**：自动生成翻译后的 SRT 字幕文件
+- ✨ **多策略字幕获取**：3层兜底机制（youtube-transcript → yt-dlp → Whisper API）
+- ✨ **tts-engine.js 模块**：独立的 TTS 引擎封装
+- ✨ **.env.example 模板**：完整的配置模板和文档
+
+**修复：**
+- 🐛 修复 `util.promisify` 引用错误
+- 🐛 修复翻译失败后卡住的问题（添加 `failFast: true`）
+- 🐛 修复 `.env` 变量名错误（`OPENAI_API_KEY` → `AGNES_API_KEY`）
+- 🐛 修复 `process.env.OPENAI_API_KEY` 判断逻辑
+
+**优化：**
+- ⚡ 移除 `gTTS` 依赖（已被 Edge TTS 替代）
+- ⚡ 优化翻译批次处理（默认 20 条/批）
+- ⚡ 改进错误处理和用户反馈
+- ⚡ 添加翻译重试机制
+
+**技术栈更新：**
+- 语音合成：~~`gTTS`~~ → **`Edge TTS`** (免费)
+- 翻译引擎：~~`RapidAPI`~~ → **`OpenAI 兼容接口`** (Agnes AI / DeepSeek)
+
 ### v1.1.0 (2026-06-22)
 
 **新增功能：**
 - ✨ 实时进度条显示（圆形进度环 + 进度条）
-- 🔧 代理状态检查端点（`/api/proxy-status`）
-- 🚀 异步处理（避免前端超时）
-- 📊 步骤指示器（4个阶段可视化）
-- 🎨 精美进度动画（SVG + CSS）
+- ✨ 代理状态检查端点（`/api/proxy-status`）
+- ✨ 异步处理（避免前端超时）
+- ✨ 步骤指示器（4个阶段可视化）
+- ✨ 精美进度动画（SVG + CSS）
 
 **修复：**
 - 🐛 修复 `server.js` 端口默认值（3001 → 3002）
@@ -561,11 +777,13 @@ cd Frontend && npm run dev
 
 ## 🙏 鸣谢
 
-- [youtube-transcript](https://github.com/Kakulukian/youtube-transcript) 用于字幕提取
-- [RapidAPI](https://rapidapi.com/) 用于翻译服务
+- [youtube-transcript](https://github.com/KhalidLukman/youtube-transcript) 用于字幕提取
+- [Agnes AI](https://agnes-ai.com/) 用于低成本翻译服务
+- [DeepSeek](https://www.deepseek.com/) 用于低成本翻译服务
+- [OpenAI](https://openai.com/) 用于翻译 API 兼容接口
+- [Edge TTS](https://github.com/rany2/edge-tts) 用于免费高质量语音合成
 - [FFmpeg](https://ffmpeg.org/) 用于视频/音频处理
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) 用于可靠的 YouTube 下载
-- [Google TTS](https://github.com/zlargon/google-tts) 用于语音合成
 - [undici](https://github.com/nodejs/undici) 用于代理支持
 - [Next.js](https://nextjs.org/) 用于前端框架
 - [Tailwind CSS](https://tailwindcss.com/) 用于样式
@@ -575,7 +793,7 @@ cd Frontend && npm run dev
 如果您遇到任何问题或有功能建议，请：
 
 1. **查看文档**：阅读本文档的故障排除部分
-2. **搜索问题**：在 [GitHub Issues](https://github.com/skyconfig/opendub/issues) 中搜索类似问题
+2. **搜索问题**：在 [GitHub Issues](https://github.com/skyconnfig/opendub/issues) 中搜索类似问题
 3. **创建新问题**：如果找不到解决方案，请创建新的 Issue
 4. **联系维护者**：通过 GitHub 联系项目维护者
 
@@ -583,12 +801,12 @@ cd Frontend && npm run dev
 
 如果您使用 DubFlow 创建了出色的配音视频，我们很乐意看到！
 
-请在 [GitHub Discussions](https://github.com/skyconfig/opendub/discussions) 中分享您的作品！
+请在 [GitHub Discussions](https://github.com/skyconnfig/opendub/discussions) 中分享您的作品！
 
 ---
 
 **用 ❤️ 为全球内容创作者制作**
 
-**作者：** skyconfig  
-**仓库：** https://github.com/skyconfig/opendub  
+**作者：** skyconnfig  
+**仓库：** https://github.com/skyconnfig/opendub  
 **最后更新：** 2026-06-22

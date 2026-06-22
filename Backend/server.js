@@ -271,11 +271,15 @@ const translateWithOpenAI = async (textArray, targetLanguage) => {
             
             // Build prompt - request JSON output for reliable parsing
             const textsToTranslate = batch.map(item => item.text);
-            const prompt = `Translate the following texts to ${targetLanguage}.\n` +
-                `Return a JSON array of translated strings, one per input, in the exact same order.\n` +
-                `Keep translations concise and natural. Do NOT add explanations or extra text.\n\n` +
-                `Input:\n${JSON.stringify(textsToTranslate)}\n\n` +
-                `Respond with ONLY the JSON array.`;
+            const prompt = `You are a professional translator. Translate each of the following texts to ${targetLanguage}.\n` +
+                `Requirements:\n` +
+                `- Return a JSON array of translated strings, one per input, in the exact same order.\n` +
+                `- Keep translations concise and natural.\n` +
+                `- Each translation MUST be unique. Do NOT translate all inputs to the same sentence.\n` +
+                `- Do NOT add explanations, notes, or extra text.\n` +
+                `- Do NOT repeat the same translation for different inputs.\n\n` +
+                `Input texts (${batch.length} items):\n${JSON.stringify(textsToTranslate)}\n\n` +
+                `Output: Respond with ONLY the JSON array, no markdown fencing, no extra text.`;
             
             console.log(`  🌐 Translating batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(textArray.length / batchSize)}`);
             
@@ -307,17 +311,23 @@ const translateWithOpenAI = async (textArray, targetLanguage) => {
                 // Validate length
                 if (translatedTexts.length !== batch.length) {
                     console.warn(`  ⚠️ Translation count mismatch: expected ${batch.length}, got ${translatedTexts.length}`);
-                    // Pad or trim to match
+                    // Pad with failure placeholder (do NOT use original text to avoid fake "repeat" perception)
                     while (translatedTexts.length < batch.length) {
-                        translatedTexts.push(batch[translatedTexts.length].text);
+                        translatedTexts.push('(translation unavailable)');
                     }
                     translatedTexts = translatedTexts.slice(0, batch.length);
                 }
+                
+                // Detect excessive duplication in this batch
+                const uniqueCount = new Set(translatedTexts).size;
+                if (uniqueCount < batch.length * 0.4) {
+                    console.warn(`  ⚠️ Excessive duplication detected in batch: ${uniqueCount} unique out of ${batch.length} (${Math.round(uniqueCount/batch.length*100)}%)`);
+                }
             } catch (parseErr) {
                 console.error(`  ⚠️ JSON parsing failed:`, parseErr.message);
-                console.error(`  📝 Raw response:`, content.substring(0, 200));
-                // Fallback: use original text
-                translatedTexts = batch.map(item => item.text);
+                console.error(`  📝 Raw response:`, content.substring(0, 300));
+                // Fallback: use placeholder to avoid original text being mistaken as "repeat"
+                translatedTexts = batch.map(() => '(translation failed)');
             }
             
             // Map back to original structure
@@ -689,6 +699,21 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
                     console.error(`⚠️ [${jobId}] Silence creation failed for line ${i}`);
                 }
             }
+        }
+        
+        // Step 3.5: Generate SRT subtitle file (AFTER tempDir is defined)
+        let srtPath = null;
+        jobProgress[jobId].message = '正在生成字幕文件...';
+        jobProgress[jobId].progress = 72;
+        
+        console.log(`📝 [${jobId}] Generating SRT subtitle file...`);
+        try {
+            srtPath = path.join(tempDir, 'translated_subtitle.srt');
+            await generateSRT(translatedTranscript, srtPath);
+            console.log(`✅ [${jobId}] SRT file generated: ${srtPath}`);
+        } catch (srtError) {
+            console.error(`⚠️ [${jobId}] SRT generation failed (non-critical):`, srtError.message);
+            srtPath = null; // Ensure srtPath is null if generation failed
         }
         
         if (audioClips.length === 0) {

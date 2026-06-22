@@ -162,6 +162,82 @@ const translateText = async (text, targetLanguage) => {
 };
 
 // Batch translate for better efficiency with configurable delays
+// Translate using Agnes AI API (OpenAI-compatible)
+const translateWithOpenAI = async (textArray, targetLanguage) => {
+    // Support both Agnes AI and OpenAI
+    const apiKey = process.env.AGNES_API_KEY || process.env.OPENAI_API_KEY;
+    const baseUrl = process.env.AGNES_BASE_URL || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+
+    if (!apiKey) {
+        console.log('  [Translate] No API key (AGNES_API_KEY or OPENAI_API_KEY), skipping...');
+        return null;
+    }
+
+    const langMap = {
+        'spanish': 'Spanish', 'french': 'French', 'german': 'German',
+        'japanese': 'Japanese', 'korean': 'Korean', 'chinese': 'Chinese (Simplified)',
+        'portuguese': 'Portuguese', 'italian': 'Italian', 'russian': 'Russian',
+        'arabic': 'Arabic', 'hindi': 'Hindi', 'dutch': 'Dutch',
+        'turkish': 'Turkish', 'polish': 'Polish', 'swedish': 'Swedish',
+        'norwegian': 'Norwegian', 'danish': 'Danish', 'finnish': 'Finnish',
+        'czech': 'Czech', 'hungarian': 'Hungarian', 'greek': 'Greek',
+        'hebrew': 'Hebrew', 'thai': 'Thai', 'vietnamese': 'Vietnamese',
+    };
+    const targetLang = langMap[targetLanguage] || targetLanguage;
+    const provider = process.env.AGNES_API_KEY ? 'Agnes AI' : 'OpenAI';
+
+    console.log(`  [${provider}] Translating ${textArray.length} items to ${targetLang}...`);
+
+    try {
+        const axios = require('axios');
+        const prompt = textArray
+            .filter(item => item.text && item.text.trim().length >= 2)
+            .map((item, i) => `${i}: ${item.text.replace(/\n/g, ' ')}`)
+            .join('\n');
+
+        const agnesModel = process.env.AGNES_MODEL || 'agnes-2.0-flash';
+        const modelToUse = process.env.AGNES_API_KEY ? agnesModel : 'gpt-3.5-turbo';
+        const response = await axios.post(`${baseUrl}/chat/completions`, {
+            model: modelToUse,
+            messages: [{
+                role: 'system',
+                content: `You are a professional translator. Translate the subtitles to ${targetLang}. ` +
+                    `Respond with ONLY the translated texts, one per line, in the same order, with the index prefix (e.g., "0: translated text"). ` +
+                    `Keep it concise and natural.`
+            }, {
+                role: 'user',
+                content: prompt
+            }],
+            temperature: 0.3,
+            max_tokens: 2000,
+        }, {
+            headers: { 'Authorization': `Bearer ${apiKey}` },
+            timeout: 60000,
+        });
+
+        const content = response.data.choices[0].message.content.trim();
+        const lines = content.split('\n').map(l => l.replace(/^\d+:\s*/, '').trim());
+
+        // Map back to transcript
+        let lineIdx = 0;
+        const result = textArray.map(item => {
+            if (!item.text || item.text.trim().length < 2) {
+                return { ...item, translatedText: item.text };
+            }
+            const translated = lineIdx < lines.length ? lines[lineIdx] : item.text;
+            lineIdx++;
+            return { ...item, translatedText: translated };
+        });
+
+        console.log(`  ✅ [${provider}] Translation completed`);
+        return result;
+
+    } catch (err) {
+        console.error(`  [${provider}] Translation failed: ${err.message}`);
+        return null;
+    }
+};
+
 const batchTranslateText = async (textArray, targetLanguage, batchSize = 10) => {
     try {
         if (!translatorAvailable) {
@@ -215,6 +291,11 @@ const batchTranslateText = async (textArray, targetLanguage, batchSize = 10) => 
                     await new Promise(resolve => setTimeout(resolve, 200));
                     
                 } catch (itemError) {
+                    // 遇到 403（API Key 无效）立即中止，不再浪费时间
+                    if (itemError.response && itemError.response.status === 403) {
+                        console.error(`  ❌ RapidAPI Key 无效 (403)，中止翻译`);
+                        throw new Error('RapidAPI_403: API Key 无效，请检查 RAPIDAPI_KEY 配置');
+                    }
                     console.error(`Translation failed for item: "${item.text.substring(0, 50)}..."`, itemError.message);
                     batchResults.push({ ...item, translatedText: item.text });
                     
@@ -309,26 +390,43 @@ const generateAudio = async (text, language, outputPath) => {
 
 // Create silence audio file
 const createSilence = async (duration, outputPath) => {
-    return new Promise((resolve, reject) => {
-        // Ensure minimum duration and maximum reasonable duration
-        const safeDuration = Math.max(0.1, Math.min(duration, 3600)); // Between 0.1s and 1 hour
-        
-        ffmpeg()
-            .input('anullsrc=channel_layout=stereo:sample_rate=22050')
-            .inputFormat('lavfi')
-            .duration(safeDuration)
-            .audioCodec('pcm_s16le') // Use compatible audio codec
-            .output(outputPath)
-            .on('end', () => {
-                console.log(`Created silence: ${safeDuration}s -> ${outputPath}`);
-                resolve(outputPath);
-            })
-            .on('error', (err) => {
-                console.error('Silence creation error:', err);
-                reject(err);
-            })
-            .run();
-    });
+    // Pure Node.js WAV generator - no ffmpeg lavfi dependency
+    const safeDuration = Math.max(0.1, Math.min(duration, 3600));
+    const sampleRate = 22050;
+    const channels = 2;
+    const bitsPerSample = 16;
+    const numSamples = Math.ceil(sampleRate * safeDuration);
+    const byteRate = sampleRate * channels * bitsPerSample / 8;
+    const blockAlign = channels * bitsPerSample / 8;
+    const dataSize = numSamples * channels * bitsPerSample / 8;
+
+    const buffer = Buffer.alloc(44 + dataSize); // 44-byte WAV header + silence
+
+    // WAV header
+    buffer.write('RIFF', 0);
+    buffer.writeUInt32LE(36 + dataSize, 4); // ChunkSize
+    buffer.write('WAVE', 8);
+    buffer.write('fmt ', 12);
+    buffer.writeUInt32LE(16, 16); // Subchunk1Size (PCM)
+    buffer.writeUInt16LE(1, 20); // AudioFormat (PCM)
+    buffer.writeUInt16LE(channels, 22);
+    buffer.writeUInt32LE(sampleRate, 24);
+    buffer.writeUInt32LE(byteRate, 28);
+    buffer.writeUInt16LE(blockAlign, 32);
+    buffer.writeUInt16LE(bitsPerSample, 34);
+    buffer.write('data', 36);
+    buffer.writeUInt32LE(dataSize, 40);
+    // Data region is all zeros (silence) - Buffer.alloc already zero-filled
+
+    try {
+        const fsSync = require('fs');
+        fsSync.writeFileSync(outputPath, buffer);
+        console.log(`Created silence (pure WAV): ${safeDuration}s -> ${outputPath} (${Math.round(buffer.length / 1024)}KB)`);
+        return outputPath;
+    } catch (err) {
+        console.error('Silence WAV creation failed:', err.message);
+        throw err;
+    }
 };
 
 // Concatenate audio files
@@ -539,20 +637,43 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage) {
         console.log(`🌐 [${jobId}] Translating transcript...`);
         let translatedTranscript;
         let translationErrors = 0;
-        
-        try {
-            translatedTranscript = await batchTranslateText(transcript, targetLanguage);
-            translationErrors = translatedTranscript.filter(item => 
-                item.text === item.translatedText && item.text.trim().length >= 2
-            ).length;
-            console.log(`✅ [${jobId}] Translation completed. ${translationErrors} errors.`);
-        } catch (translateError) {
-            console.error(`⚠️ [${jobId}] Translation failed, using original:`, translateError.message);
-            translatedTranscript = transcript.map(item => ({
-                ...item,
-                translatedText: item.text
-            }));
-            translationErrors = transcript.length;
+
+        // Try Agnes AI / OpenAI first (more reliable)
+        if (process.env.AGNES_API_KEY || process.env.OPENAI_API_KEY) {
+            try {
+                console.log(`🌐 [${jobId}] Trying OpenAI translation...`);
+                translatedTranscript = await translateWithOpenAI(transcript, targetLanguage);
+                if (translatedTranscript && translatedTranscript.length > 0) {
+                    translationErrors = translatedTranscript.filter(item =>
+                        item.text === item.translatedText && item.text.trim().length >= 2
+                    ).length;
+                    console.log(`✅ [${jobId}] OpenAI translation completed. ${translationErrors} errors.`);
+                } else {
+                    throw new Error('OpenAI returned empty result');
+                }
+            } catch (openaiError) {
+                console.error(`⚠️ [${jobId}] OpenAI translation failed, trying RapidAPI:`, openaiError.message);
+                translatedTranscript = null; // Reset to try RapidAPI
+            }
+        }
+
+        // Fallback to RapidAPI if OpenAI failed or not configured
+        if (!translatedTranscript) {
+            try {
+                console.log(`🌐 [${jobId}] Trying RapidAPI translation...`);
+                translatedTranscript = await batchTranslateText(transcript, targetLanguage);
+                translationErrors = translatedTranscript.filter(item =>
+                    item.text === item.translatedText && item.text.trim().length >= 2
+                ).length;
+                console.log(`✅ [${jobId}] RapidAPI translation completed. ${translationErrors} errors.`);
+            } catch (translateError) {
+                console.error(`⚠️ [${jobId}] All translation failed, using original:`, translateError.message);
+                translatedTranscript = transcript.map(item => ({
+                    ...item,
+                    translatedText: item.text
+                }));
+                translationErrors = transcript.length;
+            }
         }
         
         jobProgress[jobId].message = '正在生成语音...';

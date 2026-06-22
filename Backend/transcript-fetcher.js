@@ -49,6 +49,91 @@ const srtTimeToSec = (str) => {
     return parts[0] * 3600 + parts[1] * 60 + parts[2] + (parseInt(ms) || 0) / 1000;
 };
 
+// Strategy 5: use Whisper API to transcribe video audio (when all subtitle methods fail)
+const fetchTranscriptWithWhisper = async (videoId) => {
+    if (!process.env.OPENAI_API_KEY) {
+        console.log(`  [Whisper] No OPENAI_API_KEY, skipping...`);
+        return null;
+    }
+
+    console.log(`  [Whisper] Downloading audio for ${videoId}...`);
+    const audioPath = path.join(tmpDir, `${videoId}.mp3`);
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+    try {
+        // Download audio only
+        const args = [
+            '--force-overwrite',
+            '-x', '--audio-format', 'mp3',
+            '--no-warnings',
+        ];
+        if (process.env.PROXY_URL) {
+            args.push('--proxy', process.env.PROXY_URL);
+        }
+        args.push('-o', audioPath, videoUrl);
+
+        await new Promise((resolve, reject) => {
+            const proc = require('child_process').spawn('yt-dlp', args, { stdio: 'ignore' });
+            proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`yt-dlp exited ${code}`)));
+            proc.on('error', reject);
+            setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('yt-dlp timed out')); }, 60000);
+        });
+
+        if (!fsSync.existsSync(audioPath)) {
+            throw new Error('Audio download failed - file not found');
+        }
+
+        console.log(`  [Whisper] Calling OpenAI Whisper API...`);
+        const FormData = require('form-data');
+        const form = new FormData();
+        form.append('file', fsSync.createReadStream(audioPath));
+        form.append('model', 'whisper-1');
+        form.append('response_format', 'verbose_json');
+        form.append('timestamp_granularities', 'segment');
+
+        // Support both Agnes AI and OpenAI
+        const apiKey = process.env.AGNES_API_KEY || process.env.OPENAI_API_KEY;
+        const baseUrl = (process.env.AGNES_BASE_URL || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+        const provider = process.env.AGNES_API_KEY ? 'Agnes AI' : 'OpenAI';
+
+        if (!apiKey) {
+            throw new Error('No API key (AGNES_API_KEY or OPENAI_API_KEY) for Whisper');
+        }
+
+        const axios = require('axios');
+        console.log(`  [Whisper] Using ${provider} API: ${baseUrl}/audio/transcriptions`);
+        const response = await axios.post(`${baseUrl}/audio/transcriptions`, form, {
+            headers: {
+                ...form.getHeaders(),
+                'Authorization': `Bearer ${apiKey}`,
+            },
+            maxBodyLength: Infinity,
+            timeout: 120000,
+        });
+
+        const segments = response.data.segments || [];
+        if (segments.length === 0) {
+            throw new Error('Whisper returned empty segments');
+        }
+
+        const result = segments.map(seg => ({
+            text: seg.text.trim(),
+            start: seg.start,
+            duration: seg.end - seg.start,
+        }));
+
+        console.log(`  ✅ [Whisper] Got ${result.length} segments`);
+        return result;
+
+    } catch (err) {
+        console.log(`  [Whisper] Failed: ${err.message}`);
+        throw err;
+    } finally {
+        // Clean up audio file
+        try { fsSync.unlinkSync(audioPath); } catch (e) {}
+    }
+};
+
 // Main: fetch transcript using youtube-transcript package
 const fetchTranscript = async (videoId) => {
     if (!videoId || typeof videoId !== 'string' || videoId.length !== 11) {
@@ -56,6 +141,8 @@ const fetchTranscript = async (videoId) => {
     }
 
     console.log(`📝 fetchTranscript(${videoId}) via youtube-transcript...`);
+
+    const errors = []; // Collect all errors for better debugging
 
     // Strategy 1: try english subtitles first
     try {
@@ -71,7 +158,21 @@ const fetchTranscript = async (videoId) => {
             return segments;
         }
     } catch (err) {
-        console.log(`  en failed: ${err.message}`);
+        const msg = err.message;
+        console.log(`  en failed: ${msg}`);
+        errors.push(`en: ${msg}`);
+        // If transcript is disabled, no point trying other languages
+        if (msg.includes('Transcript is disabled')) {
+            throw new Error(
+                `抱歉，该视频的作者已禁用字幕功能，无法获取字幕。\n\n` +
+                `视频 ID: ${videoId}\n` +
+                `建议：请换一个开启了字幕功能的 YouTube 视频重试。\n` +
+                `推荐测试视频：\n` +
+                `  • Rick Astley - Never Gonna Give You Up: https://www.youtube.com/watch?v=dQw4w9WgXcQ\n` +
+                `  • 大卫·阿滕伯勒的海洋冒险: https://www.youtube.com/watch?v=C8EKiG581xc\n` +
+                `  • TED 演讲合集: https://www.youtube.com/watch?v=8jPQjjsBbIc`
+            );
+        }
     }
 
     // Strategy 2: try auto-generated subtitles (no lang specified)
@@ -88,10 +189,46 @@ const fetchTranscript = async (videoId) => {
             return segments;
         }
     } catch (err) {
-        console.log(`  auto-sub failed: ${err.message}`);
+        const msg = err.message;
+        console.log(`  auto-sub failed: ${msg}`);
+        errors.push(`auto: ${msg}`);
+        if (msg.includes('Transcript is disabled')) {
+            throw new Error(
+                `抱歉，该视频的作者已禁用字幕功能，无法获取字幕。\n\n` +
+                `视频 ID: ${videoId}\n` +
+                `建议：请换一个开启了字幕功能的 YouTube 视频重试。\n` +
+                `推荐测试视频：\n` +
+                `  • Rick Astley - Never Gonna Give You Up: https://www.youtube.com/watch?v=dQw4w9WgXcQ\n` +
+                `  • TED 演讲: https://www.youtube.com/watch?v=8jPQjjsBbIc\n` +
+                `  • 国家地理: https://www.youtube.com/watch?v=C8EKiG581xc`
+            );
+        }
     }
 
-    // Strategy 3: fallback to yt-dlp (if available)
+    // Strategy 3: try more language variants
+    const langList = ['zh-Hans', 'zh-Hant', 'zh', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'];
+    for (const lang of langList) {
+        try {
+            console.log(`  Trying lang=${lang}...`);
+            const transcript = await YoutubeTranscript.fetchTranscript(videoId, { lang });
+            if (transcript && transcript.length > 0) {
+                const segments = transcript.map(item => ({
+                    text: item.text,
+                    start: item.offset / 1000,
+                    duration: item.duration / 1000,
+                }));
+                console.log(`  ✅ Got ${segments.length} segments (lang=${lang})`);
+                return segments;
+            }
+        } catch (err) {
+            const msg = err.message;
+            errors.push(`${lang}: ${msg}`);
+            // Skip other langs if disabled
+            if (msg.includes('Transcript is disabled')) break;
+        }
+    }
+
+    // Strategy 4: fallback to yt-dlp (if available)
     console.log(`  Trying yt-dlp fallback...`);
     try {
         const segments = await fetchTranscriptWithYtDlp(videoId);
@@ -101,13 +238,48 @@ const fetchTranscript = async (videoId) => {
         }
     } catch (err) {
         console.log(`  yt-dlp fallback failed: ${err.message}`);
+        errors.push(`yt-dlp: ${err.message}`);
     }
 
-    throw new Error(
-        `No subtitles found for video ${videoId}. ` +
-        `The video may not have subtitles enabled, or the proxy may not be working. ` +
-        `Try a different video with manual subtitles.`
-    );
+    // Strategy 5: fallback to Whisper API (transcribe audio directly)
+    if (process.env.OPENAI_API_KEY) {
+        console.log(`  Trying Whisper API fallback...`);
+        try {
+            const segments = await fetchTranscriptWithWhisper(videoId);
+            if (segments && segments.length > 0) {
+                console.log(`  ✅ Got ${segments.length} segments via Whisper API`);
+                return segments;
+            }
+        } catch (err) {
+            console.log(`  Whisper API failed: ${err.message}`);
+            errors.push(`whisper: ${err.message}`);
+        }
+    } else {
+        console.log(`  [Whisper] Skipped - no OPENAI_API_KEY`);
+        errors.push(`whisper: OPENAI_API_KEY not set (add it to .env to enable speech-to-text fallback)`);
+    }
+
+    // All strategies failed - build helpful error
+    let helpMsg = `无法获取视频 ${videoId} 的字幕。\n\n`;
+    helpMsg += `可能原因：\n`;
+    helpMsg += `  1. 视频作者已禁用字幕功能\n`;
+    helpMsg += `  2. 视频没有任何字幕（自动生成或手动上传）\n`;
+    helpMsg += `  3. 代理连接不稳定，请稍后重试\n\n`;
+
+    // Check if Whisper is available
+    if (!process.env.OPENAI_API_KEY) {
+        helpMsg += `💡 解决方案：在 .env 中配置 OPENAI_API_KEY\n`;
+        helpMsg += `   配置后，系统会自动用 Whisper AI 语音识别提取字幕。\n`;
+        helpMsg += `   获取 Key：https://platform.openai.com/api-keys\n\n`;
+    }
+
+    helpMsg += `推荐测试视频（100% 有字幕）：\n`;
+    helpMsg += `  • https://www.youtube.com/watch?v=dQw4w9WgXcQ （Rick Astley）\n`;
+    helpMsg += `  • https://www.youtube.com/watch?v=8jPQjjsBbIc （TED 演讲）\n`;
+    helpMsg += `  • https://www.youtube.com/watch?v=C8EKiG581xc （国家地理）\n\n`;
+    helpMsg += `技术详情：${errors.slice(0, 3).join('; ')}`;
+
+    throw new Error(helpMsg);
 };
 
 // Fallback: use yt-dlp to download subtitles

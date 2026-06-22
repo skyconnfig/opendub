@@ -51,8 +51,9 @@ const srtTimeToSec = (str) => {
 
 // Strategy 5: use Whisper API to transcribe video audio (when all subtitle methods fail)
 const fetchTranscriptWithWhisper = async (videoId) => {
-    if (!process.env.OPENAI_API_KEY) {
-        console.log(`  [Whisper] No OPENAI_API_KEY, skipping...`);
+    const apiKey = process.env.AGNES_API_KEY || process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+        console.log(`  [Whisper] No AGNES_API_KEY or OPENAI_API_KEY, skipping...`);
         return null;
     }
 
@@ -161,18 +162,7 @@ const fetchTranscript = async (videoId) => {
         const msg = err.message;
         console.log(`  en failed: ${msg}`);
         errors.push(`en: ${msg}`);
-        // If transcript is disabled, no point trying other languages
-        if (msg.includes('Transcript is disabled')) {
-            throw new Error(
-                `抱歉，该视频的作者已禁用字幕功能，无法获取字幕。\n\n` +
-                `视频 ID: ${videoId}\n` +
-                `建议：请换一个开启了字幕功能的 YouTube 视频重试。\n` +
-                `推荐测试视频：\n` +
-                `  • Rick Astley - Never Gonna Give You Up: https://www.youtube.com/watch?v=dQw4w9WgXcQ\n` +
-                `  • 大卫·阿滕伯勒的海洋冒险: https://www.youtube.com/watch?v=C8EKiG581xc\n` +
-                `  • TED 演讲合集: https://www.youtube.com/watch?v=8jPQjjsBbIc`
-            );
-        }
+        // DON'T throw on "disabled" - continue to yt-dlp & Whisper fallbacks!
     }
 
     // Strategy 2: try auto-generated subtitles (no lang specified)
@@ -192,17 +182,7 @@ const fetchTranscript = async (videoId) => {
         const msg = err.message;
         console.log(`  auto-sub failed: ${msg}`);
         errors.push(`auto: ${msg}`);
-        if (msg.includes('Transcript is disabled')) {
-            throw new Error(
-                `抱歉，该视频的作者已禁用字幕功能，无法获取字幕。\n\n` +
-                `视频 ID: ${videoId}\n` +
-                `建议：请换一个开启了字幕功能的 YouTube 视频重试。\n` +
-                `推荐测试视频：\n` +
-                `  • Rick Astley - Never Gonna Give You Up: https://www.youtube.com/watch?v=dQw4w9WgXcQ\n` +
-                `  • TED 演讲: https://www.youtube.com/watch?v=8jPQjjsBbIc\n` +
-                `  • 国家地理: https://www.youtube.com/watch?v=C8EKiG581xc`
-            );
-        }
+        // DON'T throw on "disabled" - continue to yt-dlp & Whisper fallbacks!
     }
 
     // Strategy 3: try more language variants
@@ -242,7 +222,8 @@ const fetchTranscript = async (videoId) => {
     }
 
     // Strategy 5: fallback to Whisper API (transcribe audio directly)
-    if (process.env.OPENAI_API_KEY) {
+    const whisperApiKey = process.env.AGNES_API_KEY || process.env.OPENAI_API_KEY;
+    if (whisperApiKey) {
         console.log(`  Trying Whisper API fallback...`);
         try {
             const segments = await fetchTranscriptWithWhisper(videoId);
@@ -255,8 +236,8 @@ const fetchTranscript = async (videoId) => {
             errors.push(`whisper: ${err.message}`);
         }
     } else {
-        console.log(`  [Whisper] Skipped - no OPENAI_API_KEY`);
-        errors.push(`whisper: OPENAI_API_KEY not set (add it to .env to enable speech-to-text fallback)`);
+        console.log(`  [Whisper] Skipped - no AGNES_API_KEY or OPENAI_API_KEY`);
+        errors.push(`whisper: No API key set (add AGNES_API_KEY or OPENAI_API_KEY to .env to enable speech-to-text fallback)`);
     }
 
     // All strategies failed - build helpful error
@@ -267,10 +248,10 @@ const fetchTranscript = async (videoId) => {
     helpMsg += `  3. 代理连接不稳定，请稍后重试\n\n`;
 
     // Check if Whisper is available
-    if (!process.env.OPENAI_API_KEY) {
-        helpMsg += `💡 解决方案：在 .env 中配置 OPENAI_API_KEY\n`;
-        helpMsg += `   配置后，系统会自动用 Whisper AI 语音识别提取字幕。\n`;
-        helpMsg += `   获取 Key：https://platform.openai.com/api-keys\n\n`;
+    const whisperKey = process.env.AGNES_API_KEY || process.env.OPENAI_API_KEY;
+    if (!whisperKey) {
+        helpMsg += `💡 解决方案：在 .env 中配置 AGNES_API_KEY 或 OPENAI_API_KEY\n`;
+        helpMsg += `   配置后，系统会自动用 Whisper AI 语音识别提取字幕。\n\n`;
     }
 
     helpMsg += `推荐测试视频（100% 有字幕）：\n`;

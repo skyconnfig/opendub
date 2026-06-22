@@ -137,12 +137,26 @@ const concatenateAudio = async (audioFiles, outputPath) => {
 };
 
 // Download video using yt-dlp (more reliable than ytdl-core)
-const downloadVideoOnly = async (videoId, outputPath) => {
+const downloadVideoOnly = async (videoId, outputPath, cookies = null) => {
     try {
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         
-        // Use yt-dlp which is more reliable than ytdl-core
-        const command = `yt-dlp -f "bestvideo[ext=mp4]" --no-audio -o "${outputPath}" "${videoUrl}"`;
+        // Build command with optional cookie support
+        let command = `yt-dlp -f "bestvideo[ext=mp4]" --no-audio`;
+        
+        // Add cookies if provided (for age-restricted or bot-protected videos)
+        if (cookies && cookies.trim()) {
+            const cookieFile = path.join(__dirname, 'downloads', `cookies_${Date.now()}.txt`);
+            await fs.writeFile(cookieFile, cookies.trim(), 'utf8');
+            command += ` --cookies "${cookieFile}"`;
+        }
+        
+        // Add proxy if configured
+        if (process.env.PROXY_URL) {
+            command += ` --proxy "${process.env.PROXY_URL}"`;
+        }
+        
+        command += ` -o "${outputPath}" "${videoUrl}"`;
         
         console.log('Executing:', command);
         const { stdout, stderr } = await execAsync(command);
@@ -162,9 +176,22 @@ const downloadVideoOnly = async (videoId, outputPath) => {
     } catch (error) {
         console.error('yt-dlp error:', error);
         
-        // Fallback: try with different format
+        // Fallback: try with different format and cookies
         try {
-            const fallbackCommand = `yt-dlp -f "best[ext=mp4]" --no-audio -o "${outputPath}" "https://www.youtube.com/watch?v=${videoId}"`;
+            let fallbackCommand = `yt-dlp -f "best[ext=mp4]" --no-audio`;
+            
+            if (cookies && cookies.trim()) {
+                const cookieFile = path.join(__dirname, 'downloads', `cookies_fallback_${Date.now()}.txt`);
+                await fs.writeFile(cookieFile, cookies.trim(), 'utf8');
+                fallbackCommand += ` --cookies "${cookieFile}"`;
+            }
+            
+            if (process.env.PROXY_URL) {
+                fallbackCommand += ` --proxy "${process.env.PROXY_URL}"`;
+            }
+            
+            fallbackCommand += ` -o "${outputPath}" "https://www.youtube.com/watch?v=${videoId}"`;
+            
             console.log('Trying fallback:', fallbackCommand);
             await execAsync(fallbackCommand);
             
@@ -178,10 +205,23 @@ const downloadVideoOnly = async (videoId, outputPath) => {
 };
 
 // Alternative: Download video using youtube-dl
-const downloadVideoWithYoutubeDl = async (videoId, outputPath) => {
+const downloadVideoWithYoutubeDl = async (videoId, outputPath, cookies = null) => {
     try {
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-        const command = `youtube-dl -f "bestvideo[ext=mp4]" --no-audio -o "${outputPath}" "${videoUrl}"`;
+        let command = `youtube-dl -f "bestvideo[ext=mp4]" --no-audio`;
+        
+        // Add cookies if provided
+        if (cookies && cookies.trim()) {
+            const cookieFile = path.join(__dirname, 'downloads', `cookies_youtubedl_${Date.now()}.txt`);
+            await fs.writeFile(cookieFile, cookies.trim(), 'utf8');
+            command += ` --cookies "${cookieFile}"`;
+        }
+        
+        if (process.env.PROXY_URL) {
+            command += ` --proxy "${process.env.PROXY_URL}"`;
+        }
+        
+        command += ` -o "${outputPath}" "${videoUrl}"`;
         
         console.log('Executing youtube-dl:', command);
         await execAsync(command);
@@ -574,11 +614,11 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
         const videoPath = path.join(tempDir, 'video.mp4');
         
         try {
-            await downloadVideoOnly(videoId, videoPath);
+            await downloadVideoOnly(videoId, videoPath, cookies);
         } catch (error) {
             console.error(`⚠️ [${jobId}] yt-dlp failed, trying youtube-dl:`, error.message);
             try {
-                await downloadVideoWithYoutubeDl(videoId, videoPath);
+                await downloadVideoWithYoutubeDl(videoId, videoPath, cookies);
             } catch (fallbackError) {
                 throw new Error(`Video download failed: ${error.message}`);
             }

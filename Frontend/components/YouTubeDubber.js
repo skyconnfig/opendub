@@ -9,24 +9,27 @@ export default function YouTubeDubber() {
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  const [jobId, setJobId] = useState(null);
+  const [progress, setProgress] = useState(null);
+  const [polling, setPolling] = useState(false);
 
   const languages = [
-    { code: 'spanish', name: 'Spanish (Español)' },
-    { code: 'french', name: 'French (Français)' },
-    { code: 'german', name: 'German (Deutsch)' },
-    { code: 'italian', name: 'Italian (Italiano)' },
-    { code: 'portuguese', name: 'Portuguese (Português)' },
-    { code: 'russian', name: 'Russian (Русский)' },
-    { code: 'japanese', name: 'Japanese (日本語)' },
-    { code: 'korean', name: 'Korean (한국어)' },
-    { code: 'chinese', name: 'Chinese (中文)' },
-    { code: 'hindi', name: 'Hindi (हिंदी)' },
-    { code: 'arabic', name: 'Arabic (العربية)' },
-    { code: 'dutch', name: 'Dutch (Nederlands)' },
-    { code: 'polish', name: 'Polish (Polski)' },
-    { code: 'turkish', name: 'Turkish (Türkçe)' },
-    { code: 'thai', name: 'Thai (ไทย)' },
-    { code: 'vietnamese', name: 'Vietnamese (Tiếng Việt)' }
+    { code: 'spanish', name: '西班牙语 (Español)' },
+    { code: 'french', name: '法语 (Français)' },
+    { code: 'german', name: '德语 (Deutsch)' },
+    { code: 'italian', name: '意大利语 (Italiano)' },
+    { code: 'portuguese', name: '葡萄牙语 (Português)' },
+    { code: 'russian', name: '俄语 (Русский)' },
+    { code: 'japanese', name: '日语 (日本語)' },
+    { code: 'korean', name: '韩语 (한국어)' },
+    { code: 'chinese', name: '中文 (中文)' },
+    { code: 'hindi', name: '印地语 (हिंदी)' },
+    { code: 'arabic', name: '阿拉伯语 (العربية)' },
+    { code: 'dutch', name: '荷兰语 (Nederlands)' },
+    { code: 'polish', name: '波兰语 (Polski)' },
+    { code: 'turkish', name: '土耳其语 (Türkçe)' },
+    { code: 'thai', name: '泰语 (ไทย)' },
+    { code: 'vietnamese', name: '越南语 (Tiếng Việt)' }
   ];
 
   const handleSubmit = async (e) => {
@@ -34,9 +37,11 @@ export default function YouTubeDubber() {
     setIsLoading(true);
     setError('');
     setResult(null);
+    setProgress(null);
+    setJobId(null);
 
     try {
-      const response = await fetch('http://localhost:3001/api/dub-video', {
+      const response = await fetch('http://localhost:3002/api/dub-video', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -47,18 +52,47 @@ export default function YouTubeDubber() {
         })
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to process video');
+        const data = await response.json();
+        throw new Error(data.error || '视频处理失败');
       }
 
-      setResult(data);
+      const data = await response.json();
+      setJobId(data.jobId);
+      setPolling(true);
+      
+      // Start polling for progress
+      pollProgress(data.jobId);
+      
     } catch (err) {
-      setError(err.message || 'Something went wrong. Please try again.');
-    } finally {
+      setError(err.message || '出了点问题，请重试。');
       setIsLoading(false);
     }
+  };
+
+  const pollProgress = (jobId) => {
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`http://localhost:3002/api/job-progress/${jobId}`);
+        const data = await response.json();
+        
+        setProgress(data);
+        
+        if (data.status === 'completed') {
+          clearInterval(interval);
+          setPolling(false);
+          setIsLoading(false);
+          setResult(data.result);
+        } else if (data.status === 'failed') {
+          clearInterval(interval);
+          setPolling(false);
+          setIsLoading(false);
+          setError(data.error || '处理失败');
+        }
+      } catch (err) {
+        console.error('Progress polling error:', err);
+      }
+    }, 2000); // Poll every 2 seconds
   };
 
   const resetForm = () => {
@@ -79,24 +113,24 @@ export default function YouTubeDubber() {
 
       <div className="relative z-10 container mx-auto px-4 py-8">
         {/* Header */}
-        <div className="text-center mb-12">
-          <h1 className="text-5xl md:text-7xl font-bold text-white mb-4 bg-gradient-to-r from-pink-400 via-purple-400 to-indigo-400 bg-clip-text text-transparent">
-            🎙️ YouTube Video Dubber
-          </h1>
-          <p className="text-xl text-gray-300 max-w-2xl mx-auto">
-            Transform any YouTube video into multiple languages with AI-powered dubbing
-          </p>
-        </div>
+      <div className="text-center mb-12">
+        <h1 className="text-5xl md:text-7xl font-bold text-white mb-4 bg-gradient-to-r from-pink-400 via-purple-400 to-indigo-400 bg-clip-text text-transparent">
+          🎙️ YouTube 视频配音
+        </h1>
+        <p className="text-xl text-gray-300 max-w-2xl mx-auto">
+          使用AI技术将任何YouTube视频转化为多种语言
+        </p>
+      </div>
 
         {!result ? (
          
           <div className="max-w-2xl mx-auto">
             <div className="backdrop-blur-xl bg-white/10 rounded-3xl p-8 shadow-2xl border border-white/20">
               <form onSubmit={handleSubmit} className="space-y-6">
-                {/* YouTube URL Input */}
+                {/* YouTube 视频链接 */}
                 <div>
                   <label className="block text-white text-sm font-medium mb-3">
-                    🎬 YouTube Video URL
+                    🎬 YouTube 视频链接
                   </label>
                   <div className="relative">
                     <input
@@ -111,10 +145,10 @@ export default function YouTubeDubber() {
                   </div>
                 </div>
 
-                {/* Language Selection */}
+                {/* 语言选择 */}
                 <div>
                   <label className="block text-white text-sm font-medium mb-3">
-                    🌍 Target Language
+                    🌍 目标语言
                   </label>
                   <div className="relative">
                     <select
@@ -132,7 +166,7 @@ export default function YouTubeDubber() {
                   </div>
                 </div>
 
-                {/* Error Message */}
+                {/* 错误信息 */}
                 {error && (
                   <div className="flex items-center gap-3 p-4 bg-red-500/20 border border-red-500/30 rounded-2xl">
                     <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
@@ -140,7 +174,7 @@ export default function YouTubeDubber() {
                   </div>
                 )}
 
-                {/* Submit Button */}
+                {/* 提交按钮 */}
                 <button
                   type="submit"
                   disabled={isLoading || !videoUrl.trim()}
@@ -149,46 +183,97 @@ export default function YouTubeDubber() {
                   {isLoading ? (
                     <div className="flex items-center justify-center gap-3">
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>Processing Magic...</span>
+                      <span>正在处理...</span>
                     </div>
                   ) : (
                     <div className="flex items-center justify-center gap-3">
                       <Zap className="w-5 h-5" />
-                      <span>Start Dubbing</span>
+                      <span>开始配音</span>
                     </div>
                   )}
                 </button>
               </form>
             </div>
 
-            {/* Loading Animation */}
-            {isLoading && (
+            {/* 进度显示 */}
+            {(isLoading || polling) && (
               <div className="mt-8 backdrop-blur-xl bg-white/10 rounded-3xl p-8 shadow-2xl border border-white/20">
                 <div className="text-center">
-                  <div className="w-16 h-16 mx-auto mb-4">
-                    <div className="w-16 h-16 border-4 border-purple-400 border-t-transparent rounded-full animate-spin"></div>
+                  {/* 进度环 */}
+                  <div className="w-24 h-24 mx-auto mb-6 relative">
+                    <svg className="w-24 h-24 transform -rotate-90" viewBox="0 0 100 100">
+                      <circle
+                        className="text-white/10"
+                        strokeWidth="8"
+                        stroke="currentColor"
+                        fill="transparent"
+                        r="42"
+                        cx="50"
+                        cy="50"
+                      />
+                      <circle
+                        className="text-purple-400 transition-all duration-500 ease-out"
+                        strokeWidth="8"
+                        strokeDasharray={`${2 * Math.PI * 42}`}
+                        strokeDashoffset={`${2 * Math.PI * 42 * (1 - (progress?.progress || 0) / 100)}`}
+                        strokeLinecap="round"
+                        stroke="currentColor"
+                        fill="transparent"
+                        r="42"
+                        cx="50"
+                        cy="50"
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-2xl font-bold text-white">
+                        {Math.round(progress?.progress || 0)}%
+                      </span>
+                    </div>
                   </div>
-                  <h3 className="text-xl font-semibold text-white mb-2">Creating Your Dubbed Video</h3>
-                  <p className="text-gray-300 mb-4">This may take a few minutes...</p>
                   
-                  {/* Progress Steps */}
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-center gap-3 text-purple-300">
-                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></div>
-                      <span className="text-sm">Extracting transcript</span>
+                  <h3 className="text-xl font-semibold text-white mb-2">
+                    {progress?.status === 'failed' ? '处理失败' : '正在创建您的配音视频'}
+                  </h3>
+                  <p className="text-gray-300 mb-6">
+                    {progress?.message || '正在初始化...'}
+                  </p>
+                  
+                  {/* 进度条 */}
+                  <div className="w-full bg-white/10 rounded-full h-3 overflow-hidden">
+                    <div 
+                      className="h-full bg-gradient-to-r from-purple-400 to-pink-400 rounded-full transition-all duration-500 ease-out"
+                      style={{ width: `${progress?.progress || 0}%` }}
+                    ></div>
+                  </div>
+                  
+                  {/* 进度详情 */}
+                  {progress?.error && (
+                    <div className="mt-4 p-4 bg-red-500/20 border border-red-500/30 rounded-2xl">
+                      <p className="text-red-300 text-sm">{progress.error}</p>
                     </div>
-                    <div className="flex items-center justify-center gap-3 text-purple-300">
-                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-pulse delay-300"></div>
-                      <span className="text-sm">Translating content</span>
-                    </div>
-                    <div className="flex items-center justify-center gap-3 text-purple-300">
-                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-pulse delay-700"></div>
-                      <span className="text-sm">Generating audio</span>
-                    </div>
-                    <div className="flex items-center justify-center gap-3 text-purple-300">
-                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-pulse delay-1000"></div>
-                      <span className="text-sm">Merging video</span>
-                    </div>
+                  )}
+                  
+                  {/* 步骤指示器 */}
+                  <div className="mt-6 grid grid-cols-4 gap-2">
+                    {['提取字幕', '翻译内容', '生成语音', '合并视频'].map((step, idx) => {
+                      const stepProgress = [10, 30, 60, 90][idx];
+                      const isActive = (progress?.progress || 0) >= stepProgress;
+                      const isCurrent = (progress?.progress || 0) >= (idx > 0 ? [10, 30, 60][idx - 1] : 0) && (progress?.progress || 0) < stepProgress;
+                      
+                      return (
+                        <div key={step} className={`p-2 rounded-xl text-xs ${
+                          isActive ? 'bg-purple-500/30 text-purple-300' : 
+                          isCurrent ? 'bg-purple-500/20 text-purple-300 animate-pulse' : 
+                          'bg-white/5 text-gray-500'
+                        }`}>
+                          <div className="flex items-center justify-center gap-1">
+                            {isActive && <CheckCircle className="w-3 h-3" />}
+                            {isCurrent && <Loader2 className="w-3 h-3 animate-spin" />}
+                            <span>{step}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -198,16 +283,16 @@ export default function YouTubeDubber() {
           /* Results Section */
           <div className="max-w-4xl mx-auto">
             <div className="backdrop-blur-xl bg-white/10 rounded-3xl p-8 shadow-2xl border border-white/20">
-              {/* Success Message */}
+              {/* 成功消息 */}
               <div className="flex items-center gap-3 mb-6 p-4 bg-green-500/20 border border-green-500/30 rounded-2xl">
                 <CheckCircle className="w-6 h-6 text-green-400 flex-shrink-0" />
                 <div>
-                  <h3 className="text-green-300 font-semibold">Success!</h3>
+                  <h3 className="text-green-300 font-semibold">成功！</h3>
                   <p className="text-green-200 text-sm">{result.message}</p>
                 </div>
               </div>
 
-              {/* Stats */}
+              {/* 统计信息 */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
                 <div className="bg-white/5 rounded-2xl p-4 border border-white/10">
                   <div className="flex items-center gap-3">
@@ -216,7 +301,7 @@ export default function YouTubeDubber() {
                     </div>
                     <div>
                       <p className="text-white font-semibold">{result.transcriptSegments}</p>
-                      <p className="text-gray-400 text-sm">Transcript Segments</p>
+                      <p className="text-gray-400 text-sm">字幕片段</p>
                     </div>
                   </div>
                 </div>
@@ -227,42 +312,42 @@ export default function YouTubeDubber() {
                     </div>
                     <div>
                       <p className="text-white font-semibold">{result.translationErrors}</p>
-                      <p className="text-gray-400 text-sm">Translation Errors</p>
+                      <p className="text-gray-400 text-sm">翻译错误</p>
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Video Player */}
+              {/* 视频播放器 */}
               <div className="mb-6">
-                <h3 className="text-xl font-semibold text-white mb-4">🎬 Your Dubbed Video</h3>
+                <h3 className="text-xl font-semibold text-white mb-4">🎬 您的配音视频</h3>
                 <div className="bg-black/50 rounded-2xl overflow-hidden border border-white/10">
                   <video
                     controls
                     className="w-full h-auto max-h-96"
-                    src={`http://localhost:3001${result.downloadUrl}`}
+                    src={`http://localhost:3002${result.downloadUrl}`}
                   >
-                    Your browser does not support the video tag.
+                    您的浏览器不支持视频标签。
                   </video>
                 </div>
               </div>
 
-              {/* Action Buttons */}
+              {/* 操作按钮 */}
               <div className="flex flex-col sm:flex-row gap-4">
                 <a
-                  href={`http://localhost:3001${result.downloadUrl}`}
+                  href={`http://localhost:3002${result.downloadUrl}`}
                   download
                   className="flex-1 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white font-semibold py-3 px-6 rounded-2xl transition-all duration-300 transform hover:scale-105 shadow-xl text-center flex items-center justify-center gap-2"
                 >
                   <Download className="w-5 h-5" />
-                  Download Video
+                  下载视频
                 </a>
                 <button
                   onClick={resetForm}
                   className="flex-1 bg-white/10 hover:bg-white/20 text-white font-semibold py-3 px-6 rounded-2xl transition-all duration-300 border border-white/20 flex items-center justify-center gap-2"
                 >
                   <Zap className="w-5 h-5" />
-                  Dub Another Video
+                  配音另一个视频
                 </button>
               </div>
             </div>

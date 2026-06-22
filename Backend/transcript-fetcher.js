@@ -1,204 +1,184 @@
-// Enhanced transcript fetching with multiple retry attempts and fallback methods
+// transcript-fetcher.js
+// Uses youtube-transcript package (fetch goes through proxy via undici)
+require('dotenv').config();
+
 const { YoutubeTranscript } = require('youtube-transcript');
+const fs = require('fs').promises;
+const path = require('path');
+const fsSync = require('fs');
 
-// Retry configuration
-const RETRY_CONFIG = {
-    maxRetries: 5,
-    baseDelay: 1000, // 1 second
-    maxDelay: 10000, // 10 seconds
-    backoffFactor: 2
-};
-
-// Sleep utility function
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// Calculate retry delay with exponential backoff
-const calculateRetryDelay = (attempt) => {
-    const delay = RETRY_CONFIG.baseDelay * Math.pow(RETRY_CONFIG.backoffFactor, attempt);
-    return Math.min(delay, RETRY_CONFIG.maxDelay);
-};
-
-// Enhanced transcript fetching with multiple strategies
-const fetchTranscriptWithRetry = async (videoId, maxRetries = RETRY_CONFIG.maxRetries) => {
-    console.log(`📝 Attempting to fetch transcript for video: ${videoId}`);
-    
-    let lastError = null;
-    
-    // Strategy 1: Try different language codes
-    const languageCodes = ['en', 'en-US', 'en-GB', null]; // null means auto-detect
-    
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-        console.log(`Attempt ${attempt + 1}/${maxRetries}`);
-        
-        // Try different language strategies on each attempt
-        for (const langCode of languageCodes) {
-            try {
-                console.log(`Trying ${langCode ? `language: ${langCode}` : 'auto-detect language'}`);
-                
-                const config = langCode ? { lang: langCode } : {};
-                const transcript = await YoutubeTranscript.fetchTranscript(videoId, config);
-                
-                if (transcript && transcript.length > 0) {
-                    console.log(`✅ Successfully fetched transcript with ${transcript.length} segments`);
-                    return transcript.map(item => ({
-                        text: item.text,
-                        start: parseFloat(item.offset) / 1000,
-                        duration: parseFloat(item.duration) / 1000
-                    }));
-                }
-            } catch (error) {
-                lastError = error;
-                console.log(`Failed with ${langCode || 'auto-detect'}: ${error.message}`);
-                
-                // If it's a "No transcript found" error, try the next language
-                if (error.message.includes('transcript') || error.message.includes('captions')) {
-                    continue;
-                }
-                
-                // For other errors, wait before retrying
-                break;
-            }
-        }
-        
-        // Wait before next attempt (except on last attempt)
-        if (attempt < maxRetries - 1) {
-            const delay = calculateRetryDelay(attempt);
-            console.log(`⏳ Waiting ${delay}ms before retry...`);
-            await sleep(delay);
-        }
-    }
-    
-    // If all attempts failed, try alternative methods
-    console.log('🔄 Trying alternative transcript fetching methods...');
-    
+// 配置 fetch 走代理（必须在加载 youtube-transcript 之前设置）
+if (process.env.PROXY_URL) {
     try {
-        // Alternative method 1: Try with different video URL formats
-        const alternativeFormats = [
-            `https://www.youtube.com/watch?v=${videoId}`,
-            `https://youtu.be/${videoId}`,
-            videoId // Just the ID
-        ];
-        
-        for (const format of alternativeFormats) {
-            try {
-                console.log(`Trying alternative format: ${format}`);
-                const transcript = await YoutubeTranscript.fetchTranscript(format);
-                
-                if (transcript && transcript.length > 0) {
-                    console.log(`✅ Success with alternative format!`);
-                    return transcript.map(item => ({
-                        text: item.text,
-                        start: parseFloat(item.offset) / 1000,
-                        duration: parseFloat(item.duration) / 1000
-                    }));
-                }
-            } catch (altError) {
-                console.log(`Alternative format failed: ${altError.message}`);
-            }
-        }
-        
-        // Alternative method 2: Try manual transcript extraction
-        const manualTranscript = await tryManualTranscriptExtraction(videoId);
-        if (manualTranscript) {
-            return manualTranscript;
-        }
-        
-    } catch (altError) {
-        console.error('Alternative methods failed:', altError.message);
+        const { ProxyAgent, setGlobalDispatcher } = require('undici');
+        setGlobalDispatcher(new ProxyAgent({ uri: process.env.PROXY_URL }));
+        console.log(`[transcript-fetcher] ✅ fetch → proxy: ${process.env.PROXY_URL}`);
+    } catch (err) {
+        console.warn(`[transcript-fetcher] ⚠️ Cannot set proxy for fetch: ${err.message}`);
     }
-    
-    // If everything failed, throw a comprehensive error
+} else {
+    console.log(`[transcript-fetcher] No PROXY_URL set`);
+}
+
+const tmpDir = path.join(__dirname, 'downloads', 'subs');
+fsSync.mkdirSync(tmpDir, { recursive: true });
+console.log(`[transcript-fetcher] tmpDir = ${tmpDir}`);
+
+// Parse SRT subtitle format (fallback if youtube-transcript fails)
+const parseSrt = (content) => {
+    const blocks = content.trim().split(/\n\n/);
+    return blocks.map(block => {
+        const lines = block.split('\n');
+        if (lines.length < 2) return null;
+        const timeLine = lines[1];
+        if (!timeLine || !timeLine.includes(' --> ')) return null;
+        const [startStr, endStr] = timeLine.split(' --> ');
+        const text = lines.slice(2).join(' ').replace(/<[^>]+>/g, '').trim();
+        if (!text) return null;
+        return {
+            text,
+            start: srtTimeToSec(startStr),
+            duration: srtTimeToSec(endStr) - srtTimeToSec(startStr),
+        };
+    }).filter(Boolean);
+};
+
+const srtTimeToSec = (str) => {
+    const [hms, ms] = str.split(',');
+    const parts = hms.split(':').map(Number);
+    return parts[0] * 3600 + parts[1] * 60 + parts[2] + (parseInt(ms) || 0) / 1000;
+};
+
+// Main: fetch transcript using youtube-transcript package
+const fetchTranscript = async (videoId) => {
+    if (!videoId || typeof videoId !== 'string' || videoId.length !== 11) {
+        throw new Error('Invalid YouTube video ID');
+    }
+
+    console.log(`📝 fetchTranscript(${videoId}) via youtube-transcript...`);
+
+    // Strategy 1: try english subtitles first
+    try {
+        console.log(`  Trying lang=en...`);
+        const transcript = await YoutubeTranscript.fetchTranscript(videoId, { lang: 'en' });
+        if (transcript && transcript.length > 0) {
+            const segments = transcript.map(item => ({
+                text: item.text,
+                start: item.offset / 1000, // ms to seconds
+                duration: item.duration / 1000,
+            }));
+            console.log(`  ✅ Got ${segments.length} segments (lang=en)`);
+            return segments;
+        }
+    } catch (err) {
+        console.log(`  en failed: ${err.message}`);
+    }
+
+    // Strategy 2: try auto-generated subtitles (no lang specified)
+    try {
+        console.log(`  Trying auto-generated subtitles...`);
+        const transcript = await YoutubeTranscript.fetchTranscript(videoId);
+        if (transcript && transcript.length > 0) {
+            const segments = transcript.map(item => ({
+                text: item.text,
+                start: item.offset / 1000,
+                duration: item.duration / 1000,
+            }));
+            console.log(`  ✅ Got ${segments.length} auto-generated segments`);
+            return segments;
+        }
+    } catch (err) {
+        console.log(`  auto-sub failed: ${err.message}`);
+    }
+
+    // Strategy 3: fallback to yt-dlp (if available)
+    console.log(`  Trying yt-dlp fallback...`);
+    try {
+        const segments = await fetchTranscriptWithYtDlp(videoId);
+        if (segments && segments.length > 0) {
+            console.log(`  ✅ Got ${segments.length} segments via yt-dlp fallback`);
+            return segments;
+        }
+    } catch (err) {
+        console.log(`  yt-dlp fallback failed: ${err.message}`);
+    }
+
     throw new Error(
-        `Failed to fetch transcript after ${maxRetries} attempts. ` +
-        `Last error: ${lastError?.message || 'Unknown error'}. ` +
-        `This video may not have captions available, or the captions may be auto-generated only. ` +
-        `Please try with a different video that has manual captions.`
+        `No subtitles found for video ${videoId}. ` +
+        `The video may not have subtitles enabled, or the proxy may not be working. ` +
+        `Try a different video with manual subtitles.`
     );
 };
 
-// Manual transcript extraction as fallback
-const tryManualTranscriptExtraction = async (videoId) => {
-    try {
-        console.log('🔧 Attempting manual transcript extraction...');
+// Fallback: use yt-dlp to download subtitles
+const fetchTranscriptWithYtDlp = async (videoId) => {
+    const { spawn } = require('child_process');
+    
+    const outputBase = path.join(tmpDir, videoId);
+    
+    // Try auto-generated subtitles first
+    const args = ['--force-overwrite', '--write-auto-sub', '--skip-download', '--sub-format', 'srt', '--no-warnings'];
+    
+    if (process.env.PROXY_URL) {
+        args.push('--proxy', process.env.PROXY_URL);
+    }
+    
+    args.push('-o', outputBase, `https://www.youtube.com/watch?v=${videoId}`);
+    
+    return new Promise((resolve, reject) => {
+        console.log(`  [yt-dlp] Running: yt-dlp ${args.join(' ')}`);
+        const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '';
+        let stderr = '';
         
-        // This is a more direct approach using youtube-transcript's internal methods
-        const { YoutubeTranscript } = require('youtube-transcript');
+        proc.stdout.on('data', (d) => { stdout += d.toString(); });
+        proc.stderr.on('data', (d) => { stderr += d.toString(); });
         
-        // Try to get available transcript languages first
-        const availableTranscripts = await YoutubeTranscript.listTranscripts(videoId);
-        console.log('Available transcripts:', availableTranscripts);
-        
-        if (availableTranscripts && availableTranscripts.length > 0) {
-            // Try the first available transcript
-            const firstTranscript = availableTranscripts[0];
-            const transcript = await firstTranscript.fetch();
-            
-            if (transcript && transcript.length > 0) {
-                console.log('✅ Manual extraction successful!');
-                return transcript.map(item => ({
-                    text: item.text,
-                    start: parseFloat(item.start || item.offset) / 1000,
-                    duration: parseFloat(item.dur || item.duration) / 1000
-                }));
+        proc.on('close', async (code) => {
+            if (code === 0) {
+                try {
+                    const files = await fs.readdir(tmpDir);
+                    const subFile = files.find(f => f.includes(videoId) && f.endsWith('.srt'));
+                    if (subFile) {
+                        const content = await fs.readFile(path.join(tmpDir, subFile), 'utf8');
+                        const segments = parseSrt(content);
+                        if (segments && segments.length > 0) {
+                            resolve(segments);
+                            return;
+                        }
+                    }
+                    reject(new Error('Subtitle file not found or empty'));
+                } catch (err) {
+                    reject(err);
+                }
+            } else {
+                reject(new Error(`yt-dlp exited ${code}: ${stderr || stdout || 'unknown error'}`));
             }
-        }
+        });
         
-        return null;
-    } catch (error) {
-        console.log('Manual extraction failed:', error.message);
-        return null;
-    }
+        proc.on('error', reject);
+        
+        // Timeout after 30 seconds
+        setTimeout(() => {
+            proc.kill('SIGKILL');
+            reject(new Error('yt-dlp timed out after 30000ms'));
+        }, 30000);
+    });
 };
 
-// Updated main transcript fetching function
-const fetchTranscript = async (videoId) => {
-    try {
-        // Validate video ID format
-        if (!videoId || typeof videoId !== 'string' || videoId.length !== 11) {
-            throw new Error('Invalid YouTube video ID format');
-        }
-        
-        return await fetchTranscriptWithRetry(videoId);
-        
-    } catch (error) {
-        console.error('❌ Transcript fetching failed:', error.message);
-        
-        // Provide helpful error messages based on error type
-        if (error.message.includes('Private video')) {
-            throw new Error('This video is private and its transcript cannot be accessed.');
-        } else if (error.message.includes('Video unavailable')) {
-            throw new Error('This video is unavailable or has been removed.');
-        } else if (error.message.includes('Age restricted')) {
-            throw new Error('This video is age-restricted and its transcript cannot be accessed.');
-        } else if (error.message.includes('transcript') || error.message.includes('captions')) {
-            throw new Error(
-                'No transcript/captions found for this video. ' +
-                'Please ensure the video has either:\n' +
-                '• Manual captions/subtitles\n' +
-                '• Auto-generated captions enabled\n' +
-                '• Public accessibility settings'
-            );
-        } else {
-            throw error;
-        }
-    }
-};
-
-// Test function to validate transcript availability
+// Validate transcript availability (for /api/check-transcript endpoint)
 const validateTranscriptAvailability = async (videoId) => {
     try {
-        console.log(`🔍 Checking transcript availability for: ${videoId}`);
-        
+        console.log(`validateTranscriptAvailability(${videoId})...`);
         const transcript = await fetchTranscript(videoId);
-        
         return {
             available: true,
             segmentCount: transcript.length,
             totalDuration: Math.max(...transcript.map(t => t.start + t.duration)),
             preview: transcript.slice(0, 3).map(t => t.text).join(' ')
         };
-        
     } catch (error) {
+        console.log(`validateTranscriptAvailability(${videoId}) failed: ${error.message}`);
         return {
             available: false,
             error: error.message
@@ -206,10 +186,7 @@ const validateTranscriptAvailability = async (videoId) => {
     }
 };
 
-// Export the enhanced functions
 module.exports = {
     fetchTranscript,
-    fetchTranscriptWithRetry,
-    validateTranscriptAvailability,
-    RETRY_CONFIG
+    validateTranscriptAvailability
 };

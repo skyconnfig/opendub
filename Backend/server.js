@@ -13,8 +13,11 @@ const { promisify } = require('util');
 const { fetchTranscript, validateTranscriptAvailability } = require('./transcript-fetcher');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;  // Fixed: use 3002 as default to match .env
 const execAsync = promisify(exec);
+
+// Job progress tracking
+const jobProgress = {};
 
 // Middleware
 app.use(cors());
@@ -466,81 +469,85 @@ app.post('/api/check-transcript', async (req, res) => {
     }
 });
 
-// Main dubbing endpoint with RapidAPI Translator
+// Main dubbing endpoint - ASYNC with progress tracking
 app.post('/api/dub-video', async (req, res) => {
     const { videoUrl, targetLanguage } = req.body;
     const jobId = uuidv4();
     
+    // Initialize job progress
+    jobProgress[jobId] = {
+        status: 'starting',
+        progress: 0,
+        message: '正在初始化...',
+        error: null,
+        result: null
+    };
+    
+    // Immediately return jobId
+    res.status(202).json({
+        success: true,
+        jobId,
+        message: '视频处理已开始，请轮询进度'
+    });
+    
+    // Process in background
+    processDubbingJob(jobId, videoUrl, targetLanguage).catch(err => {
+        console.error(`Job ${jobId} failed:`, err);
+        jobProgress[jobId].status = 'failed';
+        jobProgress[jobId].error = err.message;
+    });
+});
+
+// Background job processing function
+async function processDubbingJob(jobId, videoUrl, targetLanguage) {
     try {
         await ensureDownloadsDir();
         
-        console.log('🎬 Starting dubbing process...');
+        console.log(`🎬 [${jobId}] Starting dubbing process...`);
+        jobProgress[jobId].status = 'processing';
+        jobProgress[jobId].message = '正在提取视频ID...';
+        jobProgress[jobId].progress = 5;
         
         // Step 1: Extract video ID
         const videoId = extractVideoId(videoUrl);
         if (!videoId) {
-            return res.status(400).json({ error: 'Invalid YouTube URL' });
+            throw new Error('Invalid YouTube URL');
         }
         
-        console.log('📹 Video ID extracted:', videoId);
+        console.log(`📹 [${jobId}] Video ID extracted: ${videoId}`);
+        jobProgress[jobId].message = '正在提取字幕...';
+        jobProgress[jobId].progress = 10;
         
-        // Step 2: Enhanced transcript fetching with retry logic
-        console.log('📝 Fetching transcript with enhanced reliability...');
-        
+        // Step 2: Fetch transcript
+        console.log(`📝 [${jobId}] Fetching transcript...`);
         let transcript;
         try {
             transcript = await fetchTranscript(videoId);
         } catch (transcriptError) {
-            console.error('❌ Enhanced transcript fetching failed:', transcriptError.message);
-            
-            // Return detailed error with suggestions
-            return res.status(400).json({
-                error: 'Transcript fetching failed',
-                details: transcriptError.message,
-                suggestions: [
-                    'Try a different video with manual captions',
-                    'Check if the video has auto-generated captions enabled',
-                    'Ensure the video is publicly accessible',
-                    'Try again in a few minutes - YouTube may be rate limiting'
-                ]
-            });
+            throw new Error(`Transcript fetching failed: ${transcriptError.message}`);
         }
         
         if (!transcript || transcript.length === 0) {
-            return res.status(400).json({
-                error: 'Empty transcript',
-                details: 'The transcript was fetched but contains no content',
-                suggestions: ['Try a different video with spoken content and captions']
-            });
+            throw new Error('Empty transcript - video may not have captions');
         }
         
-        console.log(`✅ Successfully fetched ${transcript.length} transcript segments`);
+        console.log(`✅ [${jobId}] Fetched ${transcript.length} transcript segments`);
+        jobProgress[jobId].message = '正在翻译内容...';
+        jobProgress[jobId].progress = 30;
         
-        // Log transcript sample for debugging
-        if (transcript.length > 0) {
-            console.log('Transcript preview:', transcript.slice(0, 3).map(t => t.text).join(' '));
-        }
-        
-        // Step 3: Batch translate transcript using RapidAPI
-        console.log('🌐 Translating transcript using RapidAPI Google Translator...');
-        
+        // Step 3: Translate
+        console.log(`🌐 [${jobId}] Translating transcript...`);
         let translatedTranscript;
         let translationErrors = 0;
         
         try {
             translatedTranscript = await batchTranslateText(transcript, targetLanguage);
-            
-            // Count items that weren't translated (same as original)
             translationErrors = translatedTranscript.filter(item => 
                 item.text === item.translatedText && item.text.trim().length >= 2
             ).length;
-            
-            console.log(`✅ Translation completed. ${translationErrors} items unchanged.`);
-            
+            console.log(`✅ [${jobId}] Translation completed. ${translationErrors} errors.`);
         } catch (translateError) {
-            console.error('❌ Batch translation failed:', translateError.message);
-            
-            // Fallback to original texts
+            console.error(`⚠️ [${jobId}] Translation failed, using original:`, translateError.message);
             translatedTranscript = transcript.map(item => ({
                 ...item,
                 translatedText: item.text
@@ -548,24 +555,22 @@ app.post('/api/dub-video', async (req, res) => {
             translationErrors = transcript.length;
         }
         
-        if (translationErrors > 0) {
-            console.warn(`⚠️ ${translationErrors} translation issues occurred. Some text may be in original language.`);
-        }
+        jobProgress[jobId].message = '正在生成语音...';
+        jobProgress[jobId].progress = 50;
         
         // Step 4: Generate audio clips
-        console.log('🔊 Generating audio clips...');
+        console.log(`🔊 [${jobId}] Generating audio clips...`);
         const audioClips = [];
         const tempDir = path.join(__dirname, 'downloads', jobId);
         await fs.mkdir(tempDir, { recursive: true });
         
         let successfulClips = 0;
+        const totalClips = translatedTranscript.length;
         
         for (let i = 0; i < translatedTranscript.length; i++) {
             const item = translatedTranscript[i];
             
-            // Skip very short or empty text
             if (!item.translatedText || item.translatedText.trim().length < 2) {
-                console.log(`Skipping empty/short text at line ${i}`);
                 continue;
             }
             
@@ -580,12 +585,16 @@ app.post('/api/dub-video', async (req, res) => {
                     index: i
                 });
                 successfulClips++;
-                console.log(`Generated audio ${successfulClips}/${translatedTranscript.length}`);
+                
+                // Update progress (50% to 70%)
+                const audioProgress = 50 + Math.floor((i / totalClips) * 20);
+                jobProgress[jobId].progress = audioProgress;
+                jobProgress[jobId].message = `正在生成语音... (${successfulClips}/${totalClips})`;
+                
             } catch (audioError) {
-                console.error(`Error generating audio for line ${i}:`, audioError.message);
-                // Create a short silence if TTS fails
+                console.error(`⚠️ [${jobId}] Audio gen failed for line ${i}:`, audioError.message);
                 try {
-                    const silenceDuration = Math.max(item.duration, 0.5); // At least 0.5 seconds
+                    const silenceDuration = Math.max(item.duration, 0.5);
                     const silencePath = path.join(tempDir, `silence_${i}.wav`);
                     await createSilence(silenceDuration, silencePath);
                     audioClips.push({
@@ -596,106 +605,101 @@ app.post('/api/dub-video', async (req, res) => {
                     });
                     successfulClips++;
                 } catch (silenceError) {
-                    console.error(`Failed to create silence for line ${i}:`, silenceError.message);
+                    console.error(`⚠️ [${jobId}] Silence creation failed for line ${i}`);
                 }
             }
         }
         
         if (audioClips.length === 0) {
-            throw new Error('No audio clips were generated successfully. Please check the transcript and try again.');
+            throw new Error('No audio clips were generated successfully.');
         }
         
-        console.log(`Successfully generated ${audioClips.length} audio clips`);
+        console.log(`✅ [${jobId}] Generated ${audioClips.length} audio clips`);
+        jobProgress[jobId].message = '正在对齐音频...';
+        jobProgress[jobId].progress = 72;
         
-        // Step 5: Create aligned audio track
-        console.log('⏰ Aligning audio with timestamps...');
-        const alignedAudioFiles = [];
-        
-        // Sort clips by start time
+        // Step 5: Align and concatenate audio
+        console.log(`⏰ [${jobId}] Aligning audio...`);
         audioClips.sort((a, b) => a.start - b.start);
         
+        const alignedAudioFiles = [];
         let currentTime = 0;
         
         for (let i = 0; i < audioClips.length; i++) {
             const clip = audioClips[i];
-            
-            // Add silence if there's a gap
-            if (clip.start > currentTime) {
+            if (clip.start > currentTime + 0.1) {
                 const silenceDuration = clip.start - currentTime;
-                if (silenceDuration > 0.1) { // Only add silence if gap is meaningful
-                    const silencePath = path.join(tempDir, `gap_${i}_${Date.now()}.wav`);
-                    try {
-                        await createSilence(silenceDuration, silencePath);
-                        alignedAudioFiles.push(silencePath);
-                    } catch (silenceError) {
-                        console.error(`Failed to create gap silence:`, silenceError.message);
-                    }
+                const silencePath = path.join(tempDir, `gap_${i}_${Date.now()}.wav`);
+                try {
+                    await createSilence(silenceDuration, silencePath);
+                    alignedAudioFiles.push(silencePath);
+                } catch (err) {
+                    console.error(`⚠️ [${jobId}] Gap silence failed:`, err.message);
                 }
             }
-            
             alignedAudioFiles.push(clip.path);
             currentTime = clip.start + clip.duration;
         }
         
-        if (alignedAudioFiles.length === 0) {
-            throw new Error('No aligned audio files were created. Audio generation failed.');
-        }
+        jobProgress[jobId].message = '正在合并音频...';
+        jobProgress[jobId].progress = 75;
         
-        // Step 6: Concatenate all audio
-        console.log('🔗 Concatenating audio clips...');
+        console.log(`🔗 [${jobId}] Concatenating audio...`);
         const finalAudioPath = path.join(tempDir, 'final_audio.wav');
         
         try {
             await concatenateAudio(alignedAudioFiles, finalAudioPath);
         } catch (concatError) {
-            console.error('Concatenation failed, trying alternative method:', concatError.message);
-            
-            // Alternative: Create a single silence file if concatenation fails
-            const totalDuration = Math.max(
-                ...audioClips.map(clip => clip.start + clip.duration)
-            );
+            console.error(`⚠️ [${jobId}] Concat failed, using silence:`, concatError.message);
+            const totalDuration = Math.max(...audioClips.map(c => c.start + c.duration));
             await createSilence(totalDuration || 10, finalAudioPath);
         }
         
-        // Step 7: Download video
-        console.log('📥 Downloading video...');
+        jobProgress[jobId].message = '正在下载视频...';
+        jobProgress[jobId].progress = 80;
+        
+        // Step 6: Download video
+        console.log(`📥 [${jobId}] Downloading video...`);
         const videoPath = path.join(tempDir, 'video.mp4');
         
         try {
             await downloadVideoOnly(videoId, videoPath);
         } catch (error) {
-            console.error('yt-dlp failed, trying youtube-dl:', error.message);
+            console.error(`⚠️ [${jobId}] yt-dlp failed, trying youtube-dl:`, error.message);
             try {
                 await downloadVideoWithYoutubeDl(videoId, videoPath);
             } catch (fallbackError) {
-                throw new Error(`Both yt-dlp and youtube-dl failed. Please ensure one of them is installed: ${error.message}`);
+                throw new Error(`Video download failed: ${error.message}`);
             }
         }
         
-        // Step 8: Merge video and audio
-        console.log('🎭 Merging video and audio...');
+        jobProgress[jobId].message = '正在合并视频和音频...';
+        jobProgress[jobId].progress = 90;
+        
+        // Step 7: Merge video and audio
+        console.log(`🎬 [${jobId}] Merging video and audio...`);
         const finalVideoPath = path.join(tempDir, 'dubbed_video.mp4');
         await mergeVideoAudio(videoPath, finalAudioPath, finalVideoPath);
         
-        console.log('✅ Dubbing completed successfully!');
-        
-        res.json({
-            success: true,
+        console.log(`✅ [${jobId}] Dubbing completed successfully!`);
+        jobProgress[jobId].status = 'completed';
+        jobProgress[jobId].progress = 100;
+        jobProgress[jobId].message = '处理完成！';
+        jobProgress[jobId].result = {
             jobId,
             downloadUrl: `/downloads/${jobId}/dubbed_video.mp4`,
-            message: 'Video dubbed successfully using RapidAPI Google Translator!',
+            message: 'Video dubbed successfully!',
             transcriptSegments: transcript.length,
-            translationErrors: translationErrors
-        });
+            translationErrors
+        };
         
     } catch (error) {
-        console.error('❌ Error during dubbing process:', error);
-        res.status(500).json({
-            error: 'Failed to dub video',
-            details: error.message
-        });
+        console.error(`❌ [${jobId}] Error:`, error);
+        jobProgress[jobId].status = 'failed';
+        jobProgress[jobId].error = error.message;
+        jobProgress[jobId].message = `处理失败: ${error.message}`;
     }
-});
+}
 
 // Get job status endpoint
 app.get('/api/job-status/:jobId', async (req, res) => {
@@ -716,6 +720,20 @@ app.get('/api/job-status/:jobId', async (req, res) => {
     }
 });
 
+// Get job progress endpoint (for real-time progress tracking)
+app.get('/api/job-progress/:jobId', (req, res) => {
+    const { jobId } = req.params;
+    
+    if (!jobProgress[jobId]) {
+        return res.status(404).json({
+            error: 'Job not found',
+            jobId
+        });
+    }
+    
+    res.json(jobProgress[jobId]);
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
     res.json({ 
@@ -732,6 +750,56 @@ app.use((error, req, res, next) => {
         error: 'Internal server error',
         details: error.message
     });
+});
+
+// Proxy status check endpoint
+app.get('/api/proxy-status', async (req, res) => {
+    const proxyUrl = process.env.PROXY_URL;
+    
+    if (!proxyUrl) {
+        return res.json({
+            configured: false,
+            status: 'not_configured',
+            message: 'PROXY_URL 未配置在 .env 文件中'
+        });
+    }
+    
+    try {
+        // Test proxy by checking if we can resolve DNS through it
+        // Use a simple approach: check if yt-dlp can use the proxy
+        const { execAsync } = require('util');
+        const { exec } = require('child_process');
+        const execPromise = util.promisify(exec);
+        
+        console.log(`🔍 Testing proxy: ${proxyUrl}`);
+        
+        // Try to use yt-dlp with proxy to fetch video info (lightweight test)
+        const testCommand = `yt-dlp --proxy "${proxyUrl}" --print-json --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1`;
+        
+        const { stdout, stderr } = await execPromise(testCommand, { timeout: 10000 });
+        
+        if (stdout && stdout.includes('"title"')) {
+            return res.json({
+                configured: true,
+                status: 'connected',
+                message: `代理连接正常 (${proxyUrl})`,
+                proxyUrl
+            });
+        } else {
+            throw new Error(stderr || 'Proxy test failed');
+        }
+        
+    } catch (error) {
+        console.error('Proxy test failed:', error.message);
+        
+        return res.json({
+            configured: true,
+            status: 'disconnected',
+            message: `代理连接失败: ${error.message}`,
+            proxyUrl,
+            error: error.message
+        });
+    }
 });
 
 app.listen(PORT, () => {

@@ -354,13 +354,62 @@ const formatSRTTime = (seconds) => {
 // Merge video and audio
 const mergeVideoAudio = async (videoPath, audioPath, outputPath) => {
     return new Promise((resolve, reject) => {
+        console.log(`  🎬 Merging video and audio...`);
+        console.log(`  📹 Video: ${videoPath}`);
+        console.log(`  🔊 Audio: ${audioPath}`);
+        
+        // Verify files exist
+        if (!require('fs').existsSync(videoPath)) {
+            return reject(new Error(`Video file not found: ${videoPath}`));
+        }
+        if (!require('fs').existsSync(audioPath)) {
+            return reject(new Error(`Audio file not found: ${audioPath}`));
+        }
+        
         ffmpeg()
             .input(videoPath)
             .input(audioPath)
-            .outputOptions(['-c:v', 'copy', '-c:a', 'aac', '-strict', 'experimental', '-shortest'])
+            .outputOptions([
+                '-c:v', 'libx264',    // Re-encode video to ensure compatibility
+                '-preset', 'fast',     // Fast encoding
+                '-crf', '23',          // Quality level
+                '-c:a', 'aac',       // Encode audio to AAC
+                '-b:a', '128k',      // Audio bitrate
+                '-ar', '44100',      // Audio sample rate
+                '-ac', '2',           // Stereo
+                '-shortest'            // End with shortest stream
+            ])
             .output(outputPath)
-            .on('end', () => resolve(outputPath))
-            .on('error', reject)
+            .on('start', (commandLine) => {
+                console.log(`  🚀 FFmpeg command: ${commandLine}`);
+            })
+            .on('progress', (progress) => {
+                if (progress.percent) {
+                    console.log(`  ⏳ Merge progress: ${Math.round(progress.percent)}%`);
+                }
+            })
+            .on('end', () => {
+                console.log(`  ✅ Video and audio merged successfully`);
+                resolve(outputPath);
+            })
+            .on('error', (err, stdout, stderr) => {
+                console.error(`  ❌ Merge error:`, err.message);
+                console.error(`  📝 FFmpeg stderr:`, stderr);
+                
+                // Fallback: try with simpler options
+                console.log(`  🔄 Trying fallback merge...`);
+                ffmpeg()
+                    .input(videoPath)
+                    .input(audioPath)
+                    .outputOptions(['-c:v', 'copy', '-c:a', 'aac', '-strict', 'experimental'])
+                    .output(outputPath)
+                    .on('end', () => {
+                        console.log(`  ✅ Fallback merge successful`);
+                        resolve(outputPath);
+                    })
+                    .on('error', reject)
+                    .run();
+            })
             .run();
     });
 };
@@ -506,6 +555,20 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
             }
         }
         
+        jobProgress[jobId].message = '正在生成字幕文件...';
+        jobProgress[jobId].progress = 48;
+        
+        // Step 3.5: Generate SRT subtitle file
+        console.log(`📝 [${jobId}] Generating SRT subtitle file...`);
+        try {
+            const srtPath = path.join(tempDir, 'translated_subtitle.srt');
+            await generateSRT(translatedTranscript, srtPath);
+            console.log(`✅ [${jobId}] SRT file generated: ${srtPath}`);
+        } catch (srtError) {
+            console.error(`⚠️ [${jobId}] SRT generation failed (non-critical):`, srtError.message);
+            // Non-critical error, continue processing
+        }
+        
         jobProgress[jobId].message = '正在生成语音...';
         jobProgress[jobId].progress = 50;
         
@@ -529,6 +592,19 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
             
             try {
                 await generateAudio(item.translatedText, targetLanguage, audioPath);
+                
+                // ✅ Verify audio file was created and has content
+                try {
+                    const stats = await fs.stat(audioPath);
+                    if (stats.size < 1000) {  // Less than 1KB is probably silent/empty
+                        console.warn(`  ⚠️ [${jobId}] Audio file too small (${stats.size} bytes), using silence instead`);
+                        throw new Error('Audio file too small');
+                    }
+                    console.log(`  ✅ [${jobId}] Audio generated: ${path.basename(audioPath)} (${Math.round(stats.size/1024)}KB)`);
+                } catch (statErr) {
+                    throw new Error('Audio file verification failed');
+                }
+                
                 audioClips.push({
                     path: audioPath,
                     start: item.start,
@@ -600,6 +676,20 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
         
         try {
             await concatenateAudio(alignedAudioFiles, finalAudioPath);
+            
+            // ✅ Verify final audio file has content
+            try {
+                const audioStats = await fs.stat(finalAudioPath);
+                console.log(`  ✅ Final audio file: ${Math.round(audioStats.size/1024)}KB`);
+                
+                if (audioStats.size < 5000) { // Less than 5KB is probably almost silent
+                    console.warn(`  ⚠️ [${jobId}] Final audio file is very small (${audioStats.size} bytes) - may be silent!`);
+                }
+            } catch (statErr) {
+                console.error(`  ❌ [${jobId}] Cannot verify final audio file:`, statErr.message);
+                throw new Error('Final audio file verification failed');
+            }
+            
         } catch (concatError) {
             console.error(`⚠️ [${jobId}] Concat failed, using silence:`, concatError.message);
             const totalDuration = Math.max(...audioClips.map(c => c.start + c.duration));

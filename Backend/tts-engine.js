@@ -3,8 +3,11 @@
  * 无需 API Key，无需 Windows，支持多种高质量语音
  */
 
+require('dotenv').config(); // 加载 .env 配置
+
 const { EdgeTTS } = require('node-edge-tts');
 const path = require('path');
+const { generateAudioWithKokoro, isKokoroAvailable } = require('./kokoro-tts-wrapper');
 
 // Edge TTS Voice Mapping
 // Maps language codes to appropriate Edge TTS voices
@@ -59,13 +62,15 @@ const DEFAULT_EDGE_TTS_VOICE = 'en-US-JennyNeural';
 
 /**
  * Generate audio using Edge TTS (free, high quality)
+ * This is the original implementation, now renamed to generateAudioEdge
+ * 
  * @param {string} text - Text to synthesize
  * @param {string} language - Target language (e.g., 'chinese', 'spanish')
  * @param {string} outputPath - Output file path
  * @param {string} [voiceName] - Optional specific voice name
  * @returns {Promise<string>} - Path to generated audio file
  */
-const generateAudio = async (text, language, outputPath, voiceName = null) => {
+const generateAudioEdge = async (text, language, outputPath, voiceName = null) => {
     return new Promise((resolve, reject) => {
         // Skip empty or very short text
         if (!text || text.trim().length < 2) {
@@ -114,6 +119,38 @@ const generateAudio = async (text, language, outputPath, voiceName = null) => {
 };
 
 /**
+ * Generate audio using configured TTS engine
+ * Supports: 'edge' (default) or 'kokoro'
+ * Set TTS_ENGINE=kokoro|edge in .env
+ * 
+ * @param {string} text - Text to synthesize
+ * @param {string} language - Target language (e.g., 'chinese', 'english')
+ * @param {string} outputPath - Output file path
+ * @param {string} [voiceName] - Optional specific voice name
+ * @returns {Promise<string>} - Path to generated audio file
+ */
+const generateAudio = async (text, language, outputPath, voiceName = null) => {
+    // Select TTS engine based on environment variable
+    const engine = (process.env.TTS_ENGINE || 'edge').toLowerCase();
+    
+    if (engine === 'kokoro') {
+        // Use kokoro-tts (supports 50+ voices, including Chinese)
+        console.log(`  🎤 Using Kokoro TTS engine (voice: ${voiceName || 'auto'})`);
+        try {
+            return await generateAudioWithKokoro(text, language, outputPath, voiceName);
+        } catch (err) {
+            console.error(`  ❌ Kokoro TTS failed: ${err.message}`);
+            console.log(`  🔄 Falling back to Edge TTS...`);
+            // Fall back to Edge TTS
+            return await generateAudioEdge(text, language, outputPath, voiceName);
+        }
+    }
+    
+    // Default: use Edge TTS
+    return await generateAudioEdge(text, language, outputPath, voiceName);
+};
+
+/**
  * Get available voices for a language
  * @param {string} language - Language code
  * @returns {Array<string>} - List of available voice names
@@ -139,7 +176,9 @@ const getAllVoices = () => {
 };
 
 module.exports = {
-    generateAudio,
+    generateAudio,        // Main entry point (auto-selects engine)
+    generateAudioEdge,    // Edge TTS only
+    generateAudioWithKokoro, // Kokoro TTS only (alias for direct use)
     getVoicesForLanguage,
     getAllVoices,
     DEFAULT_EDGE_TTS_VOICE

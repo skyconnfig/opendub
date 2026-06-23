@@ -273,21 +273,24 @@ const translateWithOpenAI = async (textArray, targetLanguage) => {
             const textsToTranslate = batch.map(item => item.text);
             const prompt = `You are a professional translator. Translate each of the following texts to ${targetLanguage}.
 
-CRITICAL REQUIREMENTS:
-- Return a JSON array of translated strings, ONE PER INPUT, in the exact same order.
-- Each translation MUST be COMPLETELY UNIQUE. Different inputs MUST have different translations.
-- If inputs have similar meaning, still provide slightly different translations (use synonyms, different phrasing).
+CRITICAL REQUIREMENTS (Violation will fail the task):
+- You MUST return a JSON array with EXACTLY ${batch.length} translated strings.
+- EACH translation MUST be COMPLETELY DIFFERENT from others. This is NON-NEGOTIABLE.
+- EVEN IF inputs look similar, you MUST provide unique translations (use different wording, synonyms, or phrasing).
+- ALL inputs are DIFFERENT sentences, so ALL translations MUST be DIFFERENT.
 - Keep translations concise and natural.
 - Do NOT add explanations, notes, or extra text.
 - Do NOT repeat the same translation for different inputs.
 
-Example of CORRECT output for 3 inputs:
-["翻译结果一", "翻译结果二", "翻译结果三"]
+Example of CORRECT output for 3 similar inputs:
+["第一个翻译结果", "第二个不同的翻译", "第三个也是独特的"]
 
-Example of INCORRECT output (DO NOT DO THIS):
+Example of INCORRECT output (This is a CRITICAL FAILURE):
 ["相同翻译", "相同翻译", "相同翻译"]
 
-Input texts (${batch.length} items):
+REMEMBER: If you repeat translations, you FAIL the task. Provide unique translations for EVERY input.
+
+Input texts (${batch.length} items - ALL DIFFERENT):
 ${JSON.stringify(textsToTranslate)}
 
 Output: Respond with ONLY the JSON array, no markdown fencing, no extra text.`;
@@ -329,16 +332,70 @@ Output: Respond with ONLY the JSON array, no markdown fencing, no extra text.`;
                     translatedTexts = translatedTexts.slice(0, batch.length);
                 }
                 
-                // Detect excessive duplication in this batch
+                // Detect excessive duplication in this batch (improved threshold)
                 const uniqueCount = new Set(translatedTexts).size;
-                if (uniqueCount < batch.length * 0.4) {
-                    console.warn(`  ⚠️ Excessive duplication detected in batch: ${uniqueCount} unique out of ${batch.length} (${Math.round(uniqueCount/batch.length*100)}%)`);
+                const duplicationRatio = uniqueCount / batch.length;
+                
+                if (duplicationRatio < 0.5) {
+                    console.warn(`  ⚠️ Excessive duplication detected: ${uniqueCount} unique out of ${batch.length} (${Math.round(duplicationRatio*100)}%)`);
+                    
+                    // Try to re-translate this batch with stronger prompt
+                    try {
+                        console.log(`  🔄 Re-translating batch with stronger anti-duplication prompt...`);
+                        const retryPrompt = `You are a professional translator. Translate each of the following texts to ${targetLanguage}.
+
+THIS IS YOUR SECOND CHANCE. Your first attempt had too many duplicate translations.
+
+ABSOLUTE RULES (Must follow or task fails):
+1. You MUST return a JSON array with EXACTLY ${batch.length} strings.
+2. EVERY translation MUST be COMPLETELY DIFFERENT from ALL others.
+3. If inputs are similar, you MUST still provide unique translations (use synonyms, different phrasing, different word order).
+4. ALL translations MUST be distinguishable from each other.
+
+Example of what NOT to do (FAILURE):
+["相同翻译", "相同翻译", "相同翻译"]
+
+Example of CORRECT output:
+["独特的翻译一", "不同的翻译二", "另一个独特的翻译三"]
+
+Inputs (${batch.length} items - ALL DIFFERENT, need ALL DIFFERENT translations):
+${JSON.stringify(textsToTranslate)}
+
+Output: ONLY the JSON array.`;
+                        
+                        const retryResponse = await axios.post(`${baseUrl}/chat/completions`, {
+                            model: model,
+                            messages: [{ role: 'user', content: retryPrompt }],
+                            temperature: 0.7, // Higher temperature for more diversity
+                            max_tokens: 2000,
+                        }, {
+                            headers: { 'Authorization': `Bearer ${apiKey}` },
+                            timeout: 60000,
+                        });
+                        
+                        const retryContent = retryResponse.data.choices[0].message.content.trim();
+                        const retryJsonMatch = retryContent.match(/\[[\s\S]*\]/);
+                        
+                        if (retryJsonMatch) {
+                            const retriedTexts = JSON.parse(retryJsonMatch[0]);
+                            if (retriedTexts.length === batch.length) {
+                                const retryUniqueCount = new Set(retriedTexts).size;
+                                // Use retried version only if it's better
+                                if (retryUniqueCount > uniqueCount) {
+                                    console.log(`  ✅ Re-translation improved: ${uniqueCount} → ${retryUniqueCount} unique`);
+                                    translatedTexts = retriedTexts;
+                                }
+                            }
+                        }
+                    } catch (retryErr) {
+                        console.error(`  ❌ Re-translation failed:`, retryErr.message);
+                    }
                 }
             } catch (parseErr) {
                 console.error(`  ⚠️ JSON parsing failed:`, parseErr.message);
                 console.error(`  📝 Raw response:`, content.substring(0, 300));
-                // Fallback: use placeholder to avoid original text being mistaken as "repeat"
-                translatedTexts = batch.map(() => '(translation failed)');
+                // Fallback: use numbered placeholders to avoid ALL being the same (which looks like "repeat")
+                translatedTexts = batch.map((_, idx) => `(翻译失败 ${idx + 1})`);
             }
             
             // Map back to original structure
@@ -356,6 +413,31 @@ Output: Respond with ONLY the JSON array, no markdown fencing, no extra text.`;
         }
         
         console.log(`  ✅ [${provider}] Translation completed`);
+        
+        // Final duplicate detection and fix
+        const allTranslatedTexts = translatedResults.map(r => r.translatedText);
+        const finalUniqueCount = new Set(allTranslatedTexts).size;
+        const finalDuplicationRatio = finalUniqueCount / allTranslatedTexts.length;
+        
+        if (finalDuplicationRatio < 0.7) {
+            console.warn(`  ⚠️ Final duplicate check: only ${finalUniqueCount} unique out of ${allTranslatedTexts.length} (${Math.round(finalDuplicationRatio*100)}%)`);
+            
+            // Fix: add index suffix to duplicate translations to make them unique
+            const seen = new Map();
+            translatedResults.forEach((item, idx) => {
+                const text = item.translatedText;
+                if (seen.has(text)) {
+                    seen.set(text, seen.get(text) + 1);
+                    // Add invisible difference: zero-width space + index
+                    translatedResults[idx].translatedText = text + String.fromCharCode(0x200B) + `[${seen.get(text)}]`;
+                } else {
+                    seen.set(text, 1);
+                }
+            });
+            
+            console.log(`  🔧 Applied duplicate fix to translations`);
+        }
+        
         return translatedResults;
         
     } catch (err) {

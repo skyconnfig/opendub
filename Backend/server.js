@@ -263,7 +263,7 @@ const translateWithOpenAI = async (textArray, targetLanguage) => {
     
     try {
         // Batch translate - use JSON format for reliable parsing
-        const batchSize = 15; // Smaller batch for JSON reliability
+        const batchSize = 10; // Reduced from 15 for better translation quality
         const translatedResults = [];
         
         for (let i = 0; i < textArray.length; i += batchSize) {
@@ -271,15 +271,26 @@ const translateWithOpenAI = async (textArray, targetLanguage) => {
             
             // Build prompt - request JSON output for reliable parsing
             const textsToTranslate = batch.map(item => item.text);
-            const prompt = `You are a professional translator. Translate each of the following texts to ${targetLanguage}.\n` +
-                `Requirements:\n` +
-                `- Return a JSON array of translated strings, one per input, in the exact same order.\n` +
-                `- Keep translations concise and natural.\n` +
-                `- Each translation MUST be unique. Do NOT translate all inputs to the same sentence.\n` +
-                `- Do NOT add explanations, notes, or extra text.\n` +
-                `- Do NOT repeat the same translation for different inputs.\n\n` +
-                `Input texts (${batch.length} items):\n${JSON.stringify(textsToTranslate)}\n\n` +
-                `Output: Respond with ONLY the JSON array, no markdown fencing, no extra text.`;
+            const prompt = `You are a professional translator. Translate each of the following texts to ${targetLanguage}.
+
+CRITICAL REQUIREMENTS:
+- Return a JSON array of translated strings, ONE PER INPUT, in the exact same order.
+- Each translation MUST be COMPLETELY UNIQUE. Different inputs MUST have different translations.
+- If inputs have similar meaning, still provide slightly different translations (use synonyms, different phrasing).
+- Keep translations concise and natural.
+- Do NOT add explanations, notes, or extra text.
+- Do NOT repeat the same translation for different inputs.
+
+Example of CORRECT output for 3 inputs:
+["翻译结果一", "翻译结果二", "翻译结果三"]
+
+Example of INCORRECT output (DO NOT DO THIS):
+["相同翻译", "相同翻译", "相同翻译"]
+
+Input texts (${batch.length} items):
+${JSON.stringify(textsToTranslate)}
+
+Output: Respond with ONLY the JSON array, no markdown fencing, no extra text.`;
             
             console.log(`  🌐 Translating batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(textArray.length / batchSize)}`);
             
@@ -289,7 +300,7 @@ const translateWithOpenAI = async (textArray, targetLanguage) => {
                     role: 'user',
                     content: prompt
                 }],
-                temperature: 0.3,
+                temperature: 0.5,  // Increased from 0.3 for more diverse outputs
                 max_tokens: 2000,
             }, {
                 headers: { 'Authorization': `Bearer ${apiKey}` },
@@ -619,20 +630,6 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
             }
         }
         
-        jobProgress[jobId].message = '正在生成字幕文件...';
-        jobProgress[jobId].progress = 48;
-        
-        // Step 3.5: Generate SRT subtitle file
-        console.log(`📝 [${jobId}] Generating SRT subtitle file...`);
-        try {
-            srtPath = path.join(tempDir, 'translated_subtitle.srt');
-            await generateSRT(translatedTranscript, srtPath);
-            console.log(`✅ [${jobId}] SRT file generated: ${srtPath}`);
-        } catch (srtError) {
-            console.error(`⚠️ [${jobId}] SRT generation failed (non-critical):`, srtError.message);
-            // Non-critical error, continue processing
-        }
-        
         jobProgress[jobId].message = '正在生成语音...';
         jobProgress[jobId].progress = 50;
         
@@ -702,7 +699,6 @@ async function processDubbingJob(jobId, videoUrl, targetLanguage, cookies) {
         }
         
         // Step 3.5: Generate SRT subtitle file (AFTER tempDir is defined)
-        let srtPath = null;
         jobProgress[jobId].message = '正在生成字幕文件...';
         jobProgress[jobId].progress = 72;
         

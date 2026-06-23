@@ -45,6 +45,7 @@ desktop.ini
 *.tmp
 *.temp
 check-*.js
+check_*.js
 fix-*.js
 update-*.js
 test_*.js

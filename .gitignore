@@ -49,6 +49,18 @@ fix-*.js
 update-*.js
 test_*.js
 run_tests.js
+Backend/test-*.js
+Backend/new-*-endpoint.js
+Backend/server.js.backup-*
+
+# Kokoro TTS models (large files, download on demand)
+Backend/kokoro-models/
+
+# Project docs (auto-generated guidance, optional)
+AGENTS.md
+AGNES_INTEGRATION_GUIDE.md
+BACKEND_TESTING_SUMMARY.md
+agnes.txt
 
 # Python (if using Python scripts)
 __pycache__/
